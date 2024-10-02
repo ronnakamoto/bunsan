@@ -1,5 +1,6 @@
 use std::{
     convert::TryFrom,
+    path::Path,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -14,10 +15,14 @@ use chrono::{DateTime, Utc};
 use config::{Config, File};
 use env_logger::{self, Env};
 use log::{error, info, warn};
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::time::{sleep, timeout};
+use tokio::{
+    sync::mpsc,
+    time::{sleep, timeout},
+};
 
 #[derive(Debug, Deserialize)]
 struct AppConfig {
@@ -30,7 +35,6 @@ impl TryFrom<Config> for AppConfig {
     type Error = config::ConfigError;
 
     fn try_from(config: Config) -> std::result::Result<Self, Self::Error> {
-        // Use `try_deserialize()` to avoid infinite recursion
         let app_config: AppConfig = config.try_deserialize()?;
 
         if app_config.update_interval == 0 {
@@ -134,7 +138,7 @@ async fn rpc_endpoint(body: web::Json<Value>, data: web::Data<AppState>) -> Http
     }
 }
 
-async fn update_nodes(
+async fn update_node_health(
     nodes: Arc<ArcSwap<NodeList>>,
     client: Client,
     interval: Duration,
@@ -142,16 +146,10 @@ async fn update_nodes(
     loop {
         sleep(interval).await;
 
-        // Reload the configuration
-        let config = Config::builder()
-            .add_source(File::with_name("config.toml"))
-            .build()
-            .context("Failed to reload configuration")?;
-        let app_config: AppConfig = config.try_deserialize()?;
-
-        // Use the updated node list from the configuration
+        let node_urls: Vec<String> = nodes.load().nodes.iter().map(|n| n.url.clone()).collect();
         let mut node_health = Vec::new();
-        for url in app_config.nodes {
+
+        for url in node_urls {
             let health = check_node_health(&client, &url).await;
             node_health.push(NodeHealth {
                 url,
@@ -168,13 +166,78 @@ async fn update_nodes(
         nodes.store(new_node_list);
 
         info!(
-            "Updated node list. New node count: {}",
-            nodes.load().nodes.len()
+            "Updated node health status. Healthy nodes: {}",
+            nodes.load().nodes.iter().filter(|n| n.healthy).count()
         );
     }
 
     // The loop is infinite; this return is unreachable but required by the compiler
     #[allow(unreachable_code)]
+    Ok(())
+}
+
+async fn watch_config_file(
+    path: &str,
+    nodes: Arc<ArcSwap<NodeList>>,
+    client: Client,
+) -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(1);
+
+    let mut watcher = RecommendedWatcher::new(
+        move |res| {
+            if let Ok(event) = res {
+                let _ = tx.try_send(event);
+            }
+        },
+        notify::Config::default(),
+    )?;
+
+    watcher.watch(Path::new(path), RecursiveMode::NonRecursive)?;
+
+    while let Some(event) = rx.recv().await {
+        if matches!(event.kind, EventKind::Modify(_)) {
+            info!("Configuration file changed, reloading...");
+
+            if let Err(e) = reload_configuration(&nodes, &client).await {
+                error!("Failed to reload configuration: {}", e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn reload_configuration(nodes: &Arc<ArcSwap<NodeList>>, client: &Client) -> Result<()> {
+    // Load the updated configuration
+    let config = Config::builder()
+        .add_source(File::with_name("config.toml"))
+        .build()
+        .context("Failed to reload configuration")?;
+    let app_config: AppConfig = AppConfig::try_from(config).context("Invalid configuration")?;
+
+    // Use the updated node list from the configuration
+    let mut node_health = Vec::new();
+    for url in app_config.nodes {
+        let health = check_node_health(client, &url).await;
+        node_health.push(NodeHealth {
+            url,
+            healthy: health,
+            last_check: Utc::now(),
+        });
+    }
+
+    let new_node_list = Arc::new(NodeList {
+        nodes: node_health,
+        index: AtomicUsize::new(0),
+    });
+
+    nodes.store(new_node_list);
+
+    info!(
+        "Configuration reloaded. New node count: {}",
+        nodes.load().nodes.len()
+    );
+
     Ok(())
 }
 
@@ -257,6 +320,7 @@ async fn main() -> Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
     info!("Starting Bunsan RPC Loadbalancer");
 
+    // Initial configuration loading
     let config = Config::builder()
         .add_source(File::with_name("config.toml"))
         .build()
@@ -266,22 +330,32 @@ async fn main() -> Result<()> {
     let nodes = Arc::new(ArcSwap::from_pointee(NodeList::new(
         app_config.nodes.clone(),
     )));
-    let nodes_clone = Arc::clone(&nodes);
-
     let client = Client::new();
-    let client_clone = client.clone();
 
-    tokio::spawn(async move {
-        if let Err(e) = update_nodes(
-            nodes_clone,
-            client_clone,
-            Duration::from_secs(app_config.update_interval),
-        )
-        .await
-        {
-            error!("Update nodes task failed: {}", e);
-        }
-    });
+    // Start the file watcher in a background task
+    {
+        let nodes_clone = Arc::clone(&nodes);
+        let client_clone = client.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) = watch_config_file("config.toml", nodes_clone, client_clone).await {
+                error!("File watcher error: {}", e);
+            }
+        });
+    }
+
+    // Start the node health updater
+    {
+        let nodes_clone = Arc::clone(&nodes);
+        let client_clone = client.clone();
+        let update_interval = Duration::from_secs(app_config.update_interval);
+
+        tokio::spawn(async move {
+            if let Err(e) = update_node_health(nodes_clone, client_clone, update_interval).await {
+                error!("Update nodes task failed: {}", e);
+            }
+        });
+    }
 
     let server = HttpServer::new(move || {
         App::new()
