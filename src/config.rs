@@ -18,9 +18,9 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    pub fn load(path: &str) -> Result<Self> {
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let config = Config::builder()
-            .add_source(File::with_name(path))
+            .add_source(File::from(path.as_ref()))
             .build()?;
 
         let app_config: AppConfig = config.try_deserialize()?;
@@ -36,8 +36,8 @@ impl AppConfig {
     }
 }
 
-pub async fn watch_config_file(
-    path: &str,
+pub async fn watch_config_file<P: AsRef<Path>>(
+    path: P,
     nodes: Arc<ArcSwap<NodeList>>,
     client: Client,
 ) -> Result<()> {
@@ -52,13 +52,13 @@ pub async fn watch_config_file(
         notify::Config::default(),
     )?;
 
-    watcher.watch(Path::new(path), RecursiveMode::NonRecursive)?;
+    watcher.watch(path.as_ref(), RecursiveMode::NonRecursive)?;
 
     while let Some(event) = rx.recv().await {
         if matches!(event.kind, EventKind::Modify(_)) {
             info!("Configuration file changed, reloading...");
 
-            if let Err(e) = reload_configuration(&nodes, &client).await {
+            if let Err(e) = reload_configuration(&path, &nodes, &client).await {
                 error!("Failed to reload configuration: {}", e);
             }
         }
@@ -67,8 +67,12 @@ pub async fn watch_config_file(
     Ok(())
 }
 
-async fn reload_configuration(nodes: &Arc<ArcSwap<NodeList>>, client: &Client) -> Result<()> {
-    let app_config = AppConfig::load("config.toml")?;
+async fn reload_configuration<P: AsRef<Path>>(
+    path: P,
+    nodes: &Arc<ArcSwap<NodeList>>,
+    client: &Client,
+) -> Result<()> {
+    let app_config = AppConfig::load(path)?;
 
     let mut node_health = Vec::new();
     for url in app_config.nodes {
