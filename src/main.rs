@@ -7,7 +7,7 @@ mod node;
 mod server;
 
 use crate::benchmark::{print_benchmark_results, run_benchmark};
-use crate::config::{watch_config_file, AppConfig};
+use crate::config::{watch_config_file, AppConfig, ChainNodeList};
 use crate::error::Result;
 use crate::health::check_node_health;
 use crate::node::NodeList;
@@ -21,6 +21,7 @@ use env_logger::{self, Env};
 use log::{error, info, warn};
 use prettytable::{Cell, Row, Table};
 use reqwest::Client;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,11 +33,9 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Path to the configuration file
     #[arg(short, long, global = true, env = "BUNSAN_CONFIG")]
     config: Option<PathBuf>,
 
-    /// Set log level (error, warn, info, debug, trace)
     #[arg(
         short,
         long,
@@ -49,27 +48,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the Bunsan server
     Start,
-    /// Check the health of all configured nodes
     Health,
-    /// Display the current configuration
     Config {
         #[arg(short, long)]
         json: bool,
     },
-    /// Validate the configuration file
     Validate,
-    /// List all connected nodes and their status
     Nodes,
-    /// Delete the configuration file
     DeleteConfig,
-    /// Run benchmarks
     Benchmark {
-        /// Duration of the benchmark in seconds
         #[arg(short, long, default_value = "60")]
         duration: u64,
-        /// Number of requests per second
         #[arg(short, long, default_value = "100")]
         requests_per_second: u64,
     },
@@ -78,13 +68,34 @@ enum Commands {
 const DEFAULT_CONFIG: &str = r#"
 server_addr = "127.0.0.1:8080"
 update_interval = 60
-load_balancing_strategy = "LeastConnections"
 
+[[chains]]
+name = "Ethereum"
+chain_id = 1
+load_balancing_strategy = "LeastConnections"
 nodes = [
     "https://1rpc.io/eth",
     "https://eth.drpc.org",
     "https://eth.llamarpc.com",
     "https://ethereum.blockpi.network/v1/rpc/public",
+]
+
+[[chains]]
+name = "Optimism"
+chain_id = 10
+load_balancing_strategy = "RoundRobin"
+nodes = [
+    "https://1rpc.io/op",
+    "https://optimism.blockpi.network/v1/rpc/public",
+]
+
+[[chains]]
+name = "Arbitrum One"
+chain_id = 42161
+load_balancing_strategy = "Random"
+nodes = [
+    "https://1rpc.io/arb",
+    "https://arbitrum.blockpi.network/v1/rpc/public",
 ]
 "#;
 
@@ -131,19 +142,29 @@ async fn start_server(config_path: &PathBuf) -> Result<()> {
     }
 
     let app_config = AppConfig::load(config_path)?;
-    let nodes = Arc::new(ArcSwap::from_pointee(NodeList::new(
-        app_config.nodes.clone(),
-    )));
+    let chain_nodes = Arc::new(ArcSwap::new(Arc::new(ChainNodeList::new())));
     let client = Client::new();
+
+    // Initialize chain_nodes
+    {
+        let mut initial_chain_nodes = ChainNodeList::new();
+        for chain in &app_config.chains {
+            let nodes = NodeList::new(chain.nodes.clone());
+            initial_chain_nodes.insert(chain.chain_id, Arc::new(ArcSwap::new(Arc::new(nodes))));
+        }
+        chain_nodes.store(Arc::new(initial_chain_nodes));
+    }
 
     // Start the file watcher in a background task
     {
-        let nodes_clone = Arc::clone(&nodes);
+        let chain_nodes_clone = Arc::clone(&chain_nodes);
         let client_clone = client.clone();
         let config_path_clone = config_path.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = watch_config_file(&config_path_clone, nodes_clone, client_clone).await {
+            if let Err(e) =
+                watch_config_file(&config_path_clone, chain_nodes_clone, client_clone).await
+            {
                 error!("File watcher error: {}", e);
             }
         });
@@ -151,22 +172,24 @@ async fn start_server(config_path: &PathBuf) -> Result<()> {
 
     // Start the node health updater
     {
-        let nodes_clone = Arc::clone(&nodes);
+        let chain_nodes_clone = Arc::clone(&chain_nodes);
         let client_clone = client.clone();
         let update_interval = Duration::from_secs(app_config.update_interval);
 
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(update_interval).await;
-                if let Err(e) = crate::health::update_node_health(&nodes_clone, &client_clone).await
-                {
-                    error!("Update nodes task failed: {}", e);
+                let current_chain_nodes = chain_nodes_clone.load();
+                for nodes in current_chain_nodes.values() {
+                    if let Err(e) = crate::health::update_node_health(nodes, &client_clone).await {
+                        error!("Update nodes task failed: {}", e);
+                    }
                 }
             }
         });
     }
 
-    run_server(app_config, nodes, client).await?;
+    run_server(app_config, chain_nodes, client).await?;
     Ok(())
 }
 
@@ -176,21 +199,25 @@ async fn check_health(config_path: &PathBuf) -> Result<()> {
 
     let mut table = Table::new();
     table.add_row(Row::new(vec![
+        Cell::new("Chain").style_spec("bFc"),
         Cell::new("Node URL").style_spec("bFc"),
         Cell::new("Status").style_spec("bFc"),
     ]));
 
-    for node in &app_config.nodes {
-        let health = check_node_health(&client, node).await;
-        let status = if health {
-            "Healthy".green()
-        } else {
-            "Unhealthy".red()
-        };
-        table.add_row(Row::new(vec![
-            Cell::new(node),
-            Cell::new(&status.to_string()),
-        ]));
+    for chain in &app_config.chains {
+        for node in &chain.nodes {
+            let health = check_node_health(&client, node).await;
+            let status = if health {
+                "Healthy".green()
+            } else {
+                "Unhealthy".red()
+            };
+            table.add_row(Row::new(vec![
+                Cell::new(&chain.name),
+                Cell::new(node),
+                Cell::new(&status.to_string()),
+            ]));
+        }
     }
 
     table.printstd();
@@ -206,13 +233,17 @@ fn show_config(config_path: &PathBuf, json: bool) -> Result<()> {
         println!("{}", "Current configuration:".bold());
         println!("Server address: {}", app_config.server_addr);
         println!("Update interval: {} seconds", app_config.update_interval);
-        println!(
-            "Load balancing strategy: {:?}",
-            app_config.load_balancing_strategy
-        );
-        println!("Nodes:");
-        for (i, node) in app_config.nodes.iter().enumerate() {
-            println!("  {}. {}", i + 1, node);
+        println!("Chains:");
+        for chain in &app_config.chains {
+            println!("  Chain: {} (ID: {})", chain.name, chain.chain_id);
+            println!(
+                "    Load balancing strategy: {:?}",
+                chain.load_balancing_strategy
+            );
+            println!("    Nodes:");
+            for (i, node) in chain.nodes.iter().enumerate() {
+                println!("      {}. {}", i + 1, node);
+            }
         }
     }
     Ok(())
@@ -235,29 +266,38 @@ fn validate_config(config_path: &PathBuf) -> Result<()> {
 async fn list_nodes(config_path: &PathBuf) -> Result<()> {
     let app_config = AppConfig::load(config_path)?;
     let client = Client::new();
-    let nodes = Arc::new(ArcSwap::from_pointee(NodeList::new(
-        app_config.nodes.clone(),
-    )));
+    let mut chain_nodes = HashMap::new();
+
+    for chain in &app_config.chains {
+        let nodes = Arc::new(ArcSwap::from_pointee(NodeList::new(chain.nodes.clone())));
+        chain_nodes.insert(chain.chain_id, nodes);
+    }
 
     let mut table = Table::new();
     table.add_row(Row::new(vec![
+        Cell::new("Chain").style_spec("bFc"),
         Cell::new("Node URL").style_spec("bFc"),
         Cell::new("Health").style_spec("bFc"),
         Cell::new("Connections").style_spec("bFc"),
     ]));
 
-    for node in nodes.load().nodes.iter() {
-        let health = check_node_health(&client, &node.url).await;
-        let health_status = if health {
-            "Healthy".green()
-        } else {
-            "Unhealthy".red()
-        };
-        table.add_row(Row::new(vec![
-            Cell::new(&node.url),
-            Cell::new(&health_status.to_string()),
-            Cell::new(&node.get_connections().to_string()),
-        ]));
+    for chain in &app_config.chains {
+        if let Some(nodes) = chain_nodes.get(&chain.chain_id) {
+            for node in nodes.load().nodes.iter() {
+                let health = check_node_health(&client, &node.url).await;
+                let health_status = if health {
+                    "Healthy".green()
+                } else {
+                    "Unhealthy".red()
+                };
+                table.add_row(Row::new(vec![
+                    Cell::new(&chain.name),
+                    Cell::new(&node.url),
+                    Cell::new(&health_status.to_string()),
+                    Cell::new(&node.get_connections().to_string()),
+                ]));
+            }
+        }
     }
 
     table.printstd();

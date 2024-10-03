@@ -1,10 +1,28 @@
 server_addr = "127.0.0.1:8080"
 update_interval = 60
 
+[[chains]]
+name = "Ethereum"
+chain_id = 1
+load_balancing_strategy = "LeastConnections"
 nodes = [
     "https://1rpc.io/eth",
     "https://eth.drpc.org",
     "https://eth.llamarpc.com",
     "https://ethereum.blockpi.network/v1/rpc/public",
-    "https://ethereum.blockpi.network/v1/rpc/public",
+]
+
+[[chains]]
+name = "Optimism"
+chain_id = 10
+load_balancing_strategy = "RoundRobin"
+nodes = ["https://1rpc.io/op", "https://optimism.blockpi.network/v1/rpc/public"]
+
+[[chains]]
+name = "Arbitrum One"
+chain_id = 42161
+load_balancing_strategy = "Random"
+nodes = [
+    "https://1rpc.io/arb",
+    "https://arbitrum.blockpi.network/v1/rpc/public",
 ]
