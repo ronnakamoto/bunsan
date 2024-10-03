@@ -1,20 +1,22 @@
 use crate::error::Result;
+use crate::load_balancer::StrategyType;
 use crate::node::{NodeHealth, NodeList};
 use arc_swap::ArcSwap;
 use config::{Config, File};
 use log::{error, info};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct AppConfig {
     pub server_addr: String,
     pub update_interval: u64,
     pub nodes: Vec<String>,
+    pub load_balancing_strategy: StrategyType,
 }
 
 impl AppConfig {
