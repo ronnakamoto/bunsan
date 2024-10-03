@@ -44,7 +44,7 @@ impl AppConfig {
                     1 => Some(Chain::Ethereum),
                     10 => Some(Chain::Optimism),
                     42161 => Some(Chain::Arbitrum),
-                    // Add more mappings as needed
+                    56 => Some(Chain::BNBSmartChain),
                     _ => {
                         return Err(anyhow::anyhow!(
                             "Unsupported chain ID: {}",

@@ -15,7 +15,7 @@ pub enum Chain {
     Ethereum,
     Optimism,
     Arbitrum,
-    // Add more chains as needed
+    BNBSmartChain,
 }
 
 impl Chain {
@@ -24,7 +24,7 @@ impl Chain {
             "eth" | "ethereum" => Some(Chain::Ethereum),
             "op" | "optimism" => Some(Chain::Optimism),
             "arb" | "arbitrum" => Some(Chain::Arbitrum),
-            // Add more mappings as needed
+            "bnb" | "binance" | "bsc" => Some(Chain::BNBSmartChain),
             _ => None,
         }
     }
@@ -34,7 +34,7 @@ impl Chain {
             Chain::Ethereum => 1,
             Chain::Optimism => 10,
             Chain::Arbitrum => 42161,
-            // Add more mappings as needed
+            Chain::BNBSmartChain => 56,
         }
     }
 }
@@ -170,7 +170,7 @@ macro_rules! chain_endpoints {
 }
 
 // Generate chain-specific endpoints
-chain_endpoints!(ethereum, optimism, arbitrum);
+chain_endpoints!(ethereum, optimism, arbitrum, bnb_smart_chain);
 
 async fn shutdown_signal() {
     let ctrl_c = async {
@@ -225,6 +225,7 @@ pub async fn run_server(
             .service(web::resource("/eth").route(web::post().to(ethereum)))
             .service(web::resource("/op").route(web::post().to(optimism)))
             .service(web::resource("/arb").route(web::post().to(arbitrum)))
+            .service(web::resource("/bnb").route(web::post().to(bnb_smart_chain)))
     })
     .bind(&config.server_addr)?
     .run();

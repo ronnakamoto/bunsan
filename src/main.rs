@@ -100,6 +100,13 @@ nodes = [
     "https://1rpc.io/arb",
     "https://arbitrum.blockpi.network/v1/rpc/public",
 ]
+
+[[chains]]
+name = "BNB Smart Chain Mainnet"
+chain_id = 56
+chain = "BNBSmartChain"
+load_balancing_strategy = "LeastConnections"
+nodes = ["https://1rpc.io/bnb", "https://bsc.blockpi.network/v1/rpc/public"]
 "#;
 
 #[tokio::main]

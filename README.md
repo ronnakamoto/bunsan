@@ -4,7 +4,7 @@ Bunsan(分散) is a high-performance, multi-chain RPC (Remote Procedure Call) lo
 
 ## Features
 
-- **Multi-Chain Support**: Seamlessly handle requests for multiple EVM-compatible chains (e.g., Ethereum, Optimism, Arbitrum, Base, BNB Chain).
+- **Multi-Chain Support**: Seamlessly handle requests for multiple EVM-compatible chains (e.g., Ethereum, Optimism, Arbitrum, BNB Smart Chain).
 - **Flexible Chain Selection**: Support multiple methods for specifying the target chain in requests.
 - **Dynamic Load Balancing**: Choose from multiple load balancing strategies (Round Robin, Least Connections, Random) for each chain.
 - **Health Checking**: Continuously monitor node health and automatically route traffic to healthy nodes.
@@ -85,6 +85,13 @@ nodes = [
     "https://1rpc.io/arb",
     "https://arbitrum.blockpi.network/v1/rpc/public",
 ]
+
+[[chains]]
+name = "BNB Smart Chain Mainnet"
+chain_id = 56
+chain = "BNBSmartChain"
+load_balancing_strategy = "LeastConnections"
+nodes = ["https://1rpc.io/bnb", "https://bsc.blockpi.network/v1/rpc/public"]
 ```
 
 ## Usage
@@ -131,6 +138,7 @@ Bunsan supports multiple methods for specifying the target chain in your RPC req
    POST http://localhost:8080/eth
    POST http://localhost:8080/op
    POST http://localhost:8080/arb
+   POST http://localhost:8080/bnb
    ```
 
 2. **General endpoint with chain parameter**: Specify the chain in the URL path.
@@ -138,6 +146,7 @@ Bunsan supports multiple methods for specifying the target chain in your RPC req
    POST http://localhost:8080/ethereum
    POST http://localhost:8080/optimism
    POST http://localhost:8080/arbitrum
+   POST http://localhost:8080/bnbsmartchain
    ```
 
 3. **Custom header**: Use the `X-Chain-ID` header to specify the chain.
