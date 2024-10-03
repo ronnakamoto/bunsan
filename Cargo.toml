@@ -6,17 +6,7 @@ description = "A high-performance, multi-chain RPC load balancer for EVM-compati
 license = "MIT"
 repository = "https://github.com/ronnakamoto/bunsan"
 readme = "README.md"
-keywords = [
-    "blockchain",
-    "load-balancer",
-    "rpc",
-    "ethereum",
-    "web3",
-    "taiko",
-    "binancesmartchain",
-    "bnb",
-    "base",
-]
+keywords = ["blockchain", "load-balancer", "rpc", "ethereum", "web3"]
 categories = [
     "web-programming",
     "network-programming",
