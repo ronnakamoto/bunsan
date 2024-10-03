@@ -1,6 +1,7 @@
 # Bunsan RPC Loadbalancer
 
-![Dynamic TOML Badge](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fronnakamoto%2Fbunsan%2Frefs%2Fheads%2Fmaster%2FCargo.toml&query=%24.package.version&style=for-the-badge&label=crates.io%20-%20bunsan)
+![Dynamic TOML Badge](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fronnakamoto%2Fbunsan%2Frefs%2Fheads%2Fmaster%2FCargo.toml&query=%24.package.version&style=for-the-badge&label=crates.io%20-%20bunsan) ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/ronnakamoto/bunsan/release.yml?style=for-the-badge)
+
 
 Bunsan(分散) is a high-performance, multi-chain RPC (Remote Procedure Call) load balancer designed for Ethereum and other EVM-compatible blockchain networks. It efficiently distributes incoming RPC requests across multiple nodes, ensuring optimal resource utilization and improved reliability for blockchain applications.
 
