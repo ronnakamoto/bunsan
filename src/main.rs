@@ -1,3 +1,4 @@
+mod benchmark;
 mod config;
 mod error;
 mod health;
@@ -5,6 +6,7 @@ mod load_balancer;
 mod node;
 mod server;
 
+use crate::benchmark::{print_benchmark_results, run_benchmark};
 use crate::config::{watch_config_file, AppConfig};
 use crate::error::Result;
 use crate::health::check_node_health;
@@ -62,6 +64,15 @@ enum Commands {
     Nodes,
     /// Delete the configuration file
     DeleteConfig,
+    /// Run benchmarks
+    Benchmark {
+        /// Duration of the benchmark in seconds
+        #[arg(short, long, default_value = "60")]
+        duration: u64,
+        /// Number of requests per second
+        #[arg(short, long, default_value = "100")]
+        requests_per_second: u64,
+    },
 }
 
 const DEFAULT_CONFIG: &str = r#"
@@ -96,6 +107,10 @@ async fn main() -> Result<()> {
         Some(Commands::Validate) => validate_config(&config_path)?,
         Some(Commands::Nodes) => list_nodes(&config_path).await?,
         Some(Commands::DeleteConfig) => delete_config(&config_path)?,
+        Some(Commands::Benchmark {
+            duration,
+            requests_per_second,
+        }) => run_benchmarks(&config_path, *duration, *requests_per_second).await?,
         None => start_server(&config_path).await?,
     }
 
@@ -258,5 +273,25 @@ fn delete_config(config_path: &PathBuf) -> Result<()> {
         println!("{}", "Configuration file does not exist:".yellow());
         println!("{}", config_path.display());
     }
+    Ok(())
+}
+
+async fn run_benchmarks(
+    config_path: &PathBuf,
+    duration: u64,
+    requests_per_second: u64,
+) -> Result<()> {
+    info!("Loading configuration from: {}", config_path.display());
+    let app_config = AppConfig::load(config_path)?;
+    let benchmark_duration = Duration::from_secs(duration);
+
+    info!("Starting benchmarks...");
+    info!("Duration: {} seconds", duration);
+    info!("Requests per second: {}", requests_per_second);
+
+    let results = run_benchmark(&app_config, benchmark_duration, requests_per_second).await;
+    info!("Benchmark completed. Printing results:");
+    print_benchmark_results(&results);
+
     Ok(())
 }
