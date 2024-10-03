@@ -12,6 +12,29 @@ Bunsan(分散) is a high-performance, multi-chain RPC (Remote Procedure Call) lo
 - **Detailed Metrics**: Access real-time health and performance metrics for all configured chains and nodes.
 - **Benchmarking Tools**: Evaluate and compare the performance of different load balancing strategies.
 
+## Supported Chains
+Bunsan supports the following chains out of the box:
+
+- Ethereum Mainnet (Chain ID: 1)
+- Optimism (Chain ID: 10)
+- Arbitrum One (Chain ID: 42161)
+- BNB Smart Chain (Chain ID: 56)
+- BNB Smart Chain Testnet (Chain ID: 97)
+- Sepolia Testnet (Chain ID: 11155111)
+- OP Sepolia Testnet (Chain ID: 11155420)
+- Arbitrum Sepolia Testnet (Chain ID: 421614)
+- Base Sepolia Testnet (Chain ID: 84532)
+- Base (Chain ID: 8453)
+- Polygon Mainnet (Chain ID: 137)
+- Polygon zkEVM (Chain ID: 1101)
+- Polygon Amoy (Chain ID: 80002)
+- Polygon zkEVM Testnet (Chain ID: 1442)
+- Scroll (Chain ID: 534352)
+- Scroll Sepolia Testnet (Chain ID: 534351)
+- Taiko Mainnet (Chain ID: 167000)
+- Neon EVM Mainnet (Chain ID: 245022934)
+- Neon EVM Devnet (Chain ID: 245022926)
+
 ## Installation
 
 ### Pre-built Binaries
