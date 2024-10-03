@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::load_balancer::StrategyType;
 use crate::node::{NodeHealth, NodeList};
 use arc_swap::ArcSwap;
 use config::{Config, File};
@@ -15,6 +16,7 @@ pub struct AppConfig {
     pub server_addr: String,
     pub update_interval: u64,
     pub nodes: Vec<String>,
+    pub load_balancing_strategy: StrategyType,
 }
 
 impl AppConfig {

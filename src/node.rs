@@ -1,12 +1,15 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NodeHealth {
     pub url: String,
     pub healthy: bool,
     pub last_check: DateTime<Utc>,
+    #[serde(skip)]
+    connections: Arc<AtomicUsize>,
 }
 
 impl NodeHealth {
@@ -15,46 +18,38 @@ impl NodeHealth {
             url,
             healthy,
             last_check: Utc::now(),
+            connections: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    pub fn increment_connections(&self) -> usize {
+        self.connections.fetch_add(1, Ordering::SeqCst)
+    }
+
+    pub fn decrement_connections(&self) -> usize {
+        self.connections.fetch_sub(1, Ordering::SeqCst)
+    }
+
+    pub fn get_connections(&self) -> usize {
+        self.connections.load(Ordering::SeqCst)
     }
 }
 
 pub struct NodeList {
-    pub nodes: Vec<NodeHealth>,
-    index: AtomicUsize,
+    pub nodes: Vec<Arc<NodeHealth>>,
 }
 
 impl NodeList {
     pub fn new(nodes: Vec<String>) -> Self {
         let nodes = nodes
             .into_iter()
-            .map(|url| NodeHealth::new(url, true))
+            .map(|url| Arc::new(NodeHealth::new(url, true)))
             .collect();
-        Self {
-            nodes,
-            index: AtomicUsize::new(0),
-        }
+        Self { nodes }
     }
 
     pub fn new_with_health(nodes: Vec<NodeHealth>) -> Self {
-        Self {
-            nodes,
-            index: AtomicUsize::new(0),
-        }
-    }
-
-    pub fn get_next_node(&self) -> Option<&str> {
-        let healthy_nodes: Vec<_> = self.nodes.iter().filter(|n| n.healthy).collect();
-        if healthy_nodes.is_empty() {
-            return None;
-        }
-
-        let index = self
-            .index
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |idx| {
-                Some((idx + 1) % healthy_nodes.len())
-            })
-            .unwrap_or(0);
-        Some(&healthy_nodes[index].url)
+        let nodes = nodes.into_iter().map(Arc::new).collect();
+        Self { nodes }
     }
 }

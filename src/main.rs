@@ -1,6 +1,7 @@
 mod config;
 mod error;
 mod health;
+mod load_balancer;
 mod node;
 mod server;
 
@@ -27,11 +28,16 @@ struct Args {
     /// Path to the configuration file
     #[arg(short, long, env = "BUNSAN_CONFIG")]
     config: Option<PathBuf>,
+
+    /// Delete the configuration file and exit
+    #[arg(long)]
+    delete_config: bool,
 }
 
 const DEFAULT_CONFIG: &str = r#"
 server_addr = "127.0.0.1:8080"
 update_interval = 60
+load_balancing_strategy = "LeastConnections"
 
 nodes = [
     "https://1rpc.io/eth",
@@ -44,7 +50,6 @@ nodes = [
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
-    info!("Starting Bunsan RPC Loadbalancer");
 
     let args = Args::parse();
     let config_path = args.config.unwrap_or_else(|| {
@@ -53,6 +58,20 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| PathBuf::from("config.toml"))
     });
 
+    if args.delete_config {
+        if config_path.exists() {
+            fs::remove_file(&config_path)?;
+            info!("Configuration file deleted: {}", config_path.display());
+        } else {
+            warn!(
+                "Configuration file does not exist: {}",
+                config_path.display()
+            );
+        }
+        return Ok(());
+    }
+
+    info!("Starting Bunsan RPC Loadbalancer");
     info!("Using config file: {}", config_path.display());
 
     if !config_path.exists() {
