@@ -2,6 +2,27 @@
 name = "bunsan"
 version = "1.2.0"
 edition = "2021"
+description = "A high-performance, multi-chain RPC load balancer for EVM-compatible blockchain networks"
+license = "MIT"
+repository = "https://github.com/ronnakamoto/bunsan"
+readme = "README.md"
+keywords = [
+    "blockchain",
+    "load-balancer",
+    "rpc",
+    "ethereum",
+    "web3",
+    "taiko",
+    "binancesmartchain",
+    "bnb",
+    "base",
+]
+categories = [
+    "web-programming",
+    "network-programming",
+    "cryptography::cryptocurrencies",
+    "command-line-interface",
+]
 
 [dependencies]
 actix-web = "4.9.0"
