@@ -22,7 +22,7 @@ Bunsan is a high-performance, multi-chain RPC (Remote Procedure Call) load balan
 
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/bunsan.git
+   git clone https://github.com/ronnakamoto/bunsan.git
    cd bunsan
    ```
 
