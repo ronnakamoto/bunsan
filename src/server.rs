@@ -15,7 +15,22 @@ pub enum Chain {
     Ethereum,
     Optimism,
     Arbitrum,
-    // Add more chains as needed
+    BNBSmartChain,
+    BNBSmartChainTestnet,
+    SepoliaTestnet,
+    OPSepoliaTestnet,
+    ArbitrumSepoliaTestnet,
+    BaseSepoliaTestnet,
+    Base,
+    PolygonMainnet,
+    PolygonZkEVM,
+    PolygonAmoy,
+    PolygonZkEVMTestnet,
+    Scroll,
+    ScrollSepoliaTestnet,
+    TaikoMainnet,
+    NeonEVMMainnet,
+    NeonEVMDevnet,
 }
 
 impl Chain {
@@ -24,7 +39,22 @@ impl Chain {
             "eth" | "ethereum" => Some(Chain::Ethereum),
             "op" | "optimism" => Some(Chain::Optimism),
             "arb" | "arbitrum" => Some(Chain::Arbitrum),
-            // Add more mappings as needed
+            "bnb" | "binance" | "bsc" => Some(Chain::BNBSmartChain),
+            "bnbt" | "bsc-testnet" => Some(Chain::BNBSmartChainTestnet),
+            "sepolia" => Some(Chain::SepoliaTestnet),
+            "op-sepolia" => Some(Chain::OPSepoliaTestnet),
+            "arb-sepolia" => Some(Chain::ArbitrumSepoliaTestnet),
+            "base-sepolia" => Some(Chain::BaseSepoliaTestnet),
+            "base" => Some(Chain::Base),
+            "polygon" | "matic" => Some(Chain::PolygonMainnet),
+            "polygon-zkevm" => Some(Chain::PolygonZkEVM),
+            "polygon-amoy" => Some(Chain::PolygonAmoy),
+            "polygon-zkevm-testnet" => Some(Chain::PolygonZkEVMTestnet),
+            "scroll" => Some(Chain::Scroll),
+            "scroll-sepolia" => Some(Chain::ScrollSepoliaTestnet),
+            "taiko" => Some(Chain::TaikoMainnet),
+            "neon" => Some(Chain::NeonEVMMainnet),
+            "neon-devnet" => Some(Chain::NeonEVMDevnet),
             _ => None,
         }
     }
@@ -34,7 +64,22 @@ impl Chain {
             Chain::Ethereum => 1,
             Chain::Optimism => 10,
             Chain::Arbitrum => 42161,
-            // Add more mappings as needed
+            Chain::BNBSmartChain => 56,
+            Chain::BNBSmartChainTestnet => 97,
+            Chain::SepoliaTestnet => 11155111,
+            Chain::OPSepoliaTestnet => 11155420,
+            Chain::ArbitrumSepoliaTestnet => 421614,
+            Chain::BaseSepoliaTestnet => 84532,
+            Chain::Base => 8453,
+            Chain::PolygonMainnet => 137,
+            Chain::PolygonZkEVM => 1101,
+            Chain::PolygonAmoy => 80002,
+            Chain::PolygonZkEVMTestnet => 1442,
+            Chain::Scroll => 534352,
+            Chain::ScrollSepoliaTestnet => 534351,
+            Chain::TaikoMainnet => 167000,
+            Chain::NeonEVMMainnet => 245022934,
+            Chain::NeonEVMDevnet => 245022926,
         }
     }
 }
@@ -170,7 +215,27 @@ macro_rules! chain_endpoints {
 }
 
 // Generate chain-specific endpoints
-chain_endpoints!(ethereum, optimism, arbitrum);
+chain_endpoints!(
+    ethereum,
+    optimism,
+    arbitrum,
+    bnb_smart_chain,
+    bnb_smart_chain_testnet,
+    sepolia_testnet,
+    op_sepolia_testnet,
+    arbitrum_sepolia_testnet,
+    base_sepolia_testnet,
+    base,
+    polygon_mainnet,
+    polygon_zkevm,
+    polygon_amoy,
+    polygon_zkevm_testnet,
+    scroll,
+    scroll_sepolia_testnet,
+    taiko_mainnet,
+    neon_evm_mainnet,
+    neon_evm_devnet
+);
 
 async fn shutdown_signal() {
     let ctrl_c = async {
@@ -225,6 +290,25 @@ pub async fn run_server(
             .service(web::resource("/eth").route(web::post().to(ethereum)))
             .service(web::resource("/op").route(web::post().to(optimism)))
             .service(web::resource("/arb").route(web::post().to(arbitrum)))
+            .service(web::resource("/bnb").route(web::post().to(bnb_smart_chain)))
+            .service(web::resource("/bnbt").route(web::post().to(bnb_smart_chain_testnet)))
+            .service(web::resource("/sepolia").route(web::post().to(sepolia_testnet)))
+            .service(web::resource("/op-sepolia").route(web::post().to(op_sepolia_testnet)))
+            .service(web::resource("/arb-sepolia").route(web::post().to(arbitrum_sepolia_testnet)))
+            .service(web::resource("/base-sepolia").route(web::post().to(base_sepolia_testnet)))
+            .service(web::resource("/base").route(web::post().to(base)))
+            .service(web::resource("/polygon").route(web::post().to(polygon_mainnet)))
+            .service(web::resource("/polygon-zkevm").route(web::post().to(polygon_zkevm)))
+            .service(web::resource("/polygon-amoy").route(web::post().to(polygon_amoy)))
+            .service(
+                web::resource("/polygon-zkevm-testnet")
+                    .route(web::post().to(polygon_zkevm_testnet)),
+            )
+            .service(web::resource("/scroll").route(web::post().to(scroll)))
+            .service(web::resource("/scroll-sepolia").route(web::post().to(scroll_sepolia_testnet)))
+            .service(web::resource("/taiko").route(web::post().to(taiko_mainnet)))
+            .service(web::resource("/neon").route(web::post().to(neon_evm_mainnet)))
+            .service(web::resource("/neon-devnet").route(web::post().to(neon_evm_devnet)))
     })
     .bind(&config.server_addr)?
     .run();

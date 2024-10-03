@@ -4,13 +4,36 @@ Bunsan(分散) is a high-performance, multi-chain RPC (Remote Procedure Call) lo
 
 ## Features
 
-- **Multi-Chain Support**: Seamlessly handle requests for multiple EVM-compatible chains (e.g., Ethereum, Optimism, Arbitrum, Base, BNB Chain).
+- **Multi-Chain Support**: Seamlessly handle requests for multiple EVM-compatible chains (e.g., Ethereum, Optimism, Arbitrum, BNB Smart Chain).
 - **Flexible Chain Selection**: Support multiple methods for specifying the target chain in requests.
 - **Dynamic Load Balancing**: Choose from multiple load balancing strategies (Round Robin, Least Connections, Random) for each chain.
 - **Health Checking**: Continuously monitor node health and automatically route traffic to healthy nodes.
 - **Configuration Hot-Reloading**: Update configuration without restarting the service.
 - **Detailed Metrics**: Access real-time health and performance metrics for all configured chains and nodes.
 - **Benchmarking Tools**: Evaluate and compare the performance of different load balancing strategies.
+
+## Supported Chains
+Bunsan supports the following chains out of the box:
+
+- Ethereum Mainnet (Chain ID: 1)
+- Optimism (Chain ID: 10)
+- Arbitrum One (Chain ID: 42161)
+- BNB Smart Chain (Chain ID: 56)
+- BNB Smart Chain Testnet (Chain ID: 97)
+- Sepolia Testnet (Chain ID: 11155111)
+- OP Sepolia Testnet (Chain ID: 11155420)
+- Arbitrum Sepolia Testnet (Chain ID: 421614)
+- Base Sepolia Testnet (Chain ID: 84532)
+- Base (Chain ID: 8453)
+- Polygon Mainnet (Chain ID: 137)
+- Polygon zkEVM (Chain ID: 1101)
+- Polygon Amoy (Chain ID: 80002)
+- Polygon zkEVM Testnet (Chain ID: 1442)
+- Scroll (Chain ID: 534352)
+- Scroll Sepolia Testnet (Chain ID: 534351)
+- Taiko Mainnet (Chain ID: 167000)
+- Neon EVM Mainnet (Chain ID: 245022934)
+- Neon EVM Devnet (Chain ID: 245022926)
 
 ## Installation
 
@@ -85,6 +108,13 @@ nodes = [
     "https://1rpc.io/arb",
     "https://arbitrum.blockpi.network/v1/rpc/public",
 ]
+
+[[chains]]
+name = "BNB Smart Chain Mainnet"
+chain_id = 56
+chain = "BNBSmartChain"
+load_balancing_strategy = "LeastConnections"
+nodes = ["https://1rpc.io/bnb", "https://bsc.blockpi.network/v1/rpc/public"]
 ```
 
 ## Usage
@@ -131,6 +161,7 @@ Bunsan supports multiple methods for specifying the target chain in your RPC req
    POST http://localhost:8080/eth
    POST http://localhost:8080/op
    POST http://localhost:8080/arb
+   POST http://localhost:8080/bnb
    ```
 
 2. **General endpoint with chain parameter**: Specify the chain in the URL path.
@@ -138,6 +169,7 @@ Bunsan supports multiple methods for specifying the target chain in your RPC req
    POST http://localhost:8080/ethereum
    POST http://localhost:8080/optimism
    POST http://localhost:8080/arbitrum
+   POST http://localhost:8080/bnbsmartchain
    ```
 
 3. **Custom header**: Use the `X-Chain-ID` header to specify the chain.

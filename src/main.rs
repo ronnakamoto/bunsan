@@ -100,6 +100,180 @@ nodes = [
     "https://1rpc.io/arb",
     "https://arbitrum.blockpi.network/v1/rpc/public",
 ]
+
+[[chains]]
+name = "BNB Smart Chain Mainnet"
+chain_id = 56
+chain = "BNBSmartChain"
+load_balancing_strategy = "LeastConnections"
+nodes = ["https://1rpc.io/bnb", "https://bsc.blockpi.network/v1/rpc/public"]
+
+[[chains]]
+name = "BNB Smart Chain Testnet"
+chain_id = 97
+chain = "BNBSmartChainTestnet"
+load_balancing_strategy = "RoundRobin"
+nodes = [
+    "https://bsc-testnet.blockpi.network/v1/rpc/public",
+    "https://data-seed-prebsc-1-s1.bnbchain.org:8545",
+    "https://data-seed-prebsc-2-s2.bnbchain.org:8545",
+]
+
+[[chains]]
+name = "Sepolia Testnet"
+chain_id = 11155111
+chain = "SepoliaTestnet"
+load_balancing_strategy = "LeastConnections"
+nodes = [
+    "https://rpc.sepolia.org",
+    "https://rpc2.sepolia.org",
+    "https://1rpc.io/sepolia",
+]
+
+[[chains]]
+name = "OP Sepolia Testnet"
+chain_id = 11155420
+chain = "OPSepoliaTestnet"
+load_balancing_strategy = "Random"
+nodes = [
+    "https://sepolia.optimism.io",
+    "https://optimism-sepolia.blockpi.network/v1/rpc/public",
+    "https://optimism-sepolia.drpc.org",
+]
+
+[[chains]]
+name = "Arbitrum Sepolia Testnet"
+chain_id = 421614
+chain = "ArbitrumSepoliaTestnet"
+load_balancing_strategy = "RoundRobin"
+nodes = [
+    "https://sepolia-rollup.arbitrum.io/rpc",
+    "https://arbitrum-sepolia.blockpi.network/v1/rpc/public",
+]
+
+[[chains]]
+name = "Base Sepolia Testnet"
+chain_id = 84532
+chain = "BaseSepoliaTestnet"
+load_balancing_strategy = "LeastConnections"
+nodes = [
+    "https://sepolia.base.org",
+    "https://base-sepolia.blockpi.network/v1/rpc/public",
+    "https://base-sepolia-rpc.publicnode.com",
+]
+
+[[chains]]
+name = "Base"
+chain_id = 8453
+chain = "Base"
+load_balancing_strategy = "RoundRobin"
+nodes = [
+    "https://mainnet.base.org",
+    "https://base.meowrpc.com",
+    "https://base.llamarpc.com",
+    "https://base.blockpi.network/v1/rpc/public",
+    "https://1rpc.io/base",
+    "https://developer-access-mainnet.base.org",
+]
+
+[[chains]]
+name = "Polygon Mainnet"
+chain_id = 137
+chain = "PolygonMainnet"
+load_balancing_strategy = "LeastConnections"
+nodes = [
+    "https://polygon.meowrpc.com",
+    "https://polygon.llamarpc.com",
+    "https://polygon.blockpi.network/v1/rpc/public",
+]
+
+[[chains]]
+name = "Polygon zkEVM"
+chain_id = 1101
+chain = "PolygonZkEVM"
+load_balancing_strategy = "Random"
+nodes = [
+    "https://1rpc.io/polygon/zkevm",
+    "https://rpc.ankr.com/polygon_zkevm",
+    "https://zkevm-rpc.com",
+]
+
+[[chains]]
+name = "Polygon Amoy"
+chain_id = 80002
+chain = "PolygonAmoy"
+load_balancing_strategy = "RoundRobin"
+nodes = [
+    "https://rpc-amoy.polygon.technology",
+    "https://polygon-amoy-bor-rpc.publicnode.com",
+    "https://polygon-amoy.drpc.org",
+    "https://rpc.ankr.com/polygon_amoy",
+]
+
+[[chains]]
+name = "Polygon zkEVM Testnet"
+chain_id = 1442
+chain = "PolygonZkEVMTestnet"
+load_balancing_strategy = "LeastConnections"
+nodes = [
+    "https://rpc.public.zkevm-test.net",
+    "https://polygon-zkevm-testnet.drpc.org",
+]
+
+[[chains]]
+name = "Scroll"
+chain_id = 534352
+chain = "Scroll"
+load_balancing_strategy = "Random"
+nodes = [
+    "https://scroll.drpc.org",
+    "https://scroll-mainnet.chainstacklabs.com",
+    "https://scroll-mainnet.public.blastapi.io",
+    "https://rpc.ankr.com/scroll",
+]
+
+[[chains]]
+name = "Scroll Sepolia Testnet"
+chain_id = 534351
+chain = "ScrollSepoliaTestnet"
+load_balancing_strategy = "RoundRobin"
+nodes = [
+    "https://scroll-sepolia-rpc.publicnode.com",
+    "https://scroll-sepolia.blockpi.network/v1/rpc/public",
+    "https://sepolia-rpc.scroll.io",
+]
+
+[[chains]]
+name = "Taiko Mainnet"
+chain_id = 167000
+chain = "TaikoMainnet"
+load_balancing_strategy = "LeastConnections"
+nodes = [
+    "https://taiko-rpc.publicnode.com",
+    "https://rpc.ankr.com/taiko",
+    "https://taiko.blockpi.network/v1/rpc/public",
+    "https://taiko.drpc.org",
+]
+
+[[chains]]
+name = "Neon EVM Mainnet"
+chain_id = 245022934
+chain = "NeonEVMMainnet"
+load_balancing_strategy = "Random"
+nodes = [
+    "https://neon-proxy-mainnet.solana.p2p.org",
+    "https://neon-evm.drpc.org",
+]
+
+[[chains]]
+name = "Neon EVM Devnet"
+chain_id = 245022926
+chain = "NeonEVMDevnet"
+load_balancing_strategy = "RoundRobin"
+nodes = [
+    "https://devnet.neonevm.org",
+    "https://neon-evm-devnet.drpc.org",
+]
 "#;
 
 #[tokio::main]
