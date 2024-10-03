@@ -1,6 +1,6 @@
 # Bunsan RPC Loadbalancer
 
-Bunsan is a high-performance, multi-chain RPC (Remote Procedure Call) load balancer designed for Ethereum and other EVM-compatible blockchain networks. It efficiently distributes incoming RPC requests across multiple nodes, ensuring optimal resource utilization and improved reliability for blockchain applications.
+Bunsan(分散) is a high-performance, multi-chain RPC (Remote Procedure Call) load balancer designed for Ethereum and other EVM-compatible blockchain networks. It efficiently distributes incoming RPC requests across multiple nodes, ensuring optimal resource utilization and improved reliability for blockchain applications.
 
 ## Features
 
@@ -13,10 +13,26 @@ Bunsan is a high-performance, multi-chain RPC (Remote Procedure Call) load balan
 
 ## Installation
 
-### Prerequisites
+### Pre-built Binaries
 
-- Rust 1.54 or later
-- Cargo (Rust's package manager)
+You can download pre-built binaries for Bunsan from the [Releases](https://github.com/ronnakamoto/bunsan/releases) page. We provide binaries for:
+
+- Linux (x86_64)
+- Windows (x86_64)
+- macOS (x86_64 / Intel)
+- macOS (arm64 / Apple Silicon)
+
+Download the appropriate binary for your system:
+
+- For Linux and macOS Intel systems: Use the `x86_64` version
+- For macOS Apple Silicon systems: Use the `arm64` version
+- For Windows: Use the `.exe` file
+
+On Linux and macOS, make the binary executable after downloading:
+
+```bash
+chmod +x bunsan-*
+```
 
 ### Building from Source
 
