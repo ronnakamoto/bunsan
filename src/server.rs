@@ -1,13 +1,43 @@
 use crate::config::{AppConfig, ChainNodeList};
 use crate::error::Result;
 use crate::load_balancer::LoadBalancingStrategy;
-use actix_web::{web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, Responder};
 use arc_swap::ArcSwap;
 use log::{error, info};
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Chain {
+    Ethereum,
+    Optimism,
+    Arbitrum,
+    // Add more chains as needed
+}
+
+impl Chain {
+    fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "eth" | "ethereum" => Some(Chain::Ethereum),
+            "op" | "optimism" => Some(Chain::Optimism),
+            "arb" | "arbitrum" => Some(Chain::Arbitrum),
+            // Add more mappings as needed
+            _ => None,
+        }
+    }
+
+    fn to_chain_id(&self) -> u64 {
+        match self {
+            Chain::Ethereum => 1,
+            Chain::Optimism => 10,
+            Chain::Arbitrum => 42161,
+            // Add more mappings as needed
+        }
+    }
+}
 
 pub struct AppState {
     chain_nodes: Arc<ArcSwap<ChainNodeList>>,
@@ -38,15 +68,60 @@ async fn health_check(data: web::Data<AppState>) -> impl Responder {
     }))
 }
 
-async fn rpc_endpoint(body: web::Json<Value>, data: web::Data<AppState>) -> HttpResponse {
-    let chain_id = body
-        .get("params")
-        .and_then(|params| params.get(0))
-        .and_then(|param| param.get("chainId"))
-        .and_then(|chain_id| chain_id.as_u64())
-        .unwrap_or(1); // Default to Ethereum mainnet if chainId is not provided
+async fn rpc_endpoint(
+    req: HttpRequest,
+    body: web::Json<Value>,
+    data: web::Data<AppState>,
+) -> HttpResponse {
+    let chain = determine_chain(&req, &body);
 
+    match chain {
+        Some(chain) => process_request(chain, body, data).await,
+        None => HttpResponse::BadRequest()
+            .json(json!({"error": "Invalid or missing chain specification"})),
+    }
+}
+
+fn determine_chain(req: &HttpRequest, body: &web::Json<Value>) -> Option<Chain> {
+    // Check URL path
+    if let Some(path) = req.match_info().get("chain") {
+        if let Some(chain) = Chain::from_str(path) {
+            return Some(chain);
+        }
+    }
+
+    // Check header
+    if let Some(chain_str) = req.headers().get("X-Chain-ID") {
+        if let Ok(chain_str) = chain_str.to_str() {
+            if let Some(chain) = Chain::from_str(chain_str) {
+                return Some(chain);
+            }
+        }
+    }
+
+    // Check request body
+    if let Some(params) = body.get("params") {
+        if let Some(chain_obj) = params.get(0) {
+            if let Some(chain_str) = chain_obj.get("chain") {
+                if let Some(chain_str) = chain_str.as_str() {
+                    return Chain::from_str(chain_str);
+                }
+            }
+        }
+    }
+
+    // Default to Ethereum if no chain is specified
+    Some(Chain::Ethereum)
+}
+
+async fn process_request(
+    chain: Chain,
+    body: web::Json<Value>,
+    data: web::Data<AppState>,
+) -> HttpResponse {
+    let chain_id = chain.to_chain_id();
     let chain_nodes = data.chain_nodes.load();
+
     if let Some(nodes) = chain_nodes.get(&chain_id) {
         let nodes = nodes.load();
         if let Some(load_balancer) = data.load_balancers.get(&chain_id) {
@@ -82,6 +157,20 @@ async fn rpc_endpoint(body: web::Json<Value>, data: web::Data<AppState>) -> Http
         HttpResponse::BadRequest().json(json!({"error": "Unsupported chain ID"}))
     }
 }
+
+// Macro to generate chain-specific endpoints
+macro_rules! chain_endpoints {
+    ($($chain:ident),*) => {
+        $(
+            pub async fn $chain(req: HttpRequest, body: web::Json<Value>, data: web::Data<AppState>) -> HttpResponse {
+                rpc_endpoint(req, body, data).await
+            }
+        )*
+    };
+}
+
+// Generate chain-specific endpoints
+chain_endpoints!(ethereum, optimism, arbitrum);
 
 async fn shutdown_signal() {
     let ctrl_c = async {
@@ -132,6 +221,10 @@ pub async fn run_server(
             }))
             .route("/health", web::get().to(health_check))
             .route("/", web::post().to(rpc_endpoint))
+            .route("/{chain}", web::post().to(rpc_endpoint))
+            .service(web::resource("/eth").route(web::post().to(ethereum)))
+            .service(web::resource("/op").route(web::post().to(optimism)))
+            .service(web::resource("/arb").route(web::post().to(arbitrum)))
     })
     .bind(&config.server_addr)?
     .run();

@@ -4,6 +4,7 @@ update_interval = 60
 [[chains]]
 name = "Ethereum"
 chain_id = 1
+chain = "Ethereum"
 load_balancing_strategy = "LeastConnections"
 nodes = [
     "https://1rpc.io/eth",
@@ -15,12 +16,14 @@ nodes = [
 [[chains]]
 name = "Optimism"
 chain_id = 10
+chain = "Optimism"
 load_balancing_strategy = "RoundRobin"
 nodes = ["https://1rpc.io/op", "https://optimism.blockpi.network/v1/rpc/public"]
 
 [[chains]]
 name = "Arbitrum One"
 chain_id = 42161
+chain = "Arbitrum"
 load_balancing_strategy = "Random"
 nodes = [
     "https://1rpc.io/arb",

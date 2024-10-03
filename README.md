@@ -5,6 +5,7 @@ Bunsan(分散) is a high-performance, multi-chain RPC (Remote Procedure Call) lo
 ## Features
 
 - **Multi-Chain Support**: Seamlessly handle requests for multiple EVM-compatible chains (e.g., Ethereum, Optimism, Arbitrum, Base, BNB Chain).
+- **Flexible Chain Selection**: Support multiple methods for specifying the target chain in requests.
 - **Dynamic Load Balancing**: Choose from multiple load balancing strategies (Round Robin, Least Connections, Random) for each chain.
 - **Health Checking**: Continuously monitor node health and automatically route traffic to healthy nodes.
 - **Configuration Hot-Reloading**: Update configuration without restarting the service.
@@ -22,13 +23,7 @@ You can download pre-built binaries for Bunsan from the [Releases](https://githu
 - macOS (x86_64 / Intel)
 - macOS (arm64 / Apple Silicon)
 
-Download the appropriate binary for your system:
-
-- For Linux and macOS Intel systems: Use the `x86_64` version
-- For macOS Apple Silicon systems: Use the `arm64` version
-- For Windows: Use the `.exe` file
-
-On Linux and macOS, make the binary executable after downloading:
+Download the appropriate binary for your system and make it executable (on Unix-based systems):
 
 ```bash
 chmod +x bunsan-*
@@ -62,6 +57,7 @@ update_interval = 60
 [[chains]]
 name = "Ethereum"
 chain_id = 1
+chain = "Ethereum"
 load_balancing_strategy = "LeastConnections"
 nodes = [
     "https://1rpc.io/eth",
@@ -73,6 +69,7 @@ nodes = [
 [[chains]]
 name = "Optimism"
 chain_id = 10
+chain = "Optimism"
 load_balancing_strategy = "RoundRobin"
 nodes = [
     "https://1rpc.io/op",
@@ -82,6 +79,7 @@ nodes = [
 [[chains]]
 name = "Arbitrum One"
 chain_id = 42161
+chain = "Arbitrum"
 load_balancing_strategy = "Random"
 nodes = [
     "https://1rpc.io/arb",
@@ -120,6 +118,42 @@ For more information on each command, use the `--help` option:
 
 ```
 ./bunsan --help
+```
+
+If you plan to run the benchmarks, please make sure to first auto-generate the config by running Bunsan first via `start` option.
+
+### Making RPC Requests
+
+Bunsan supports multiple methods for specifying the target chain in your RPC requests:
+
+1. **Chain-specific endpoints**: Use dedicated endpoints for each chain.
+   ```
+   POST http://localhost:8080/eth
+   POST http://localhost:8080/op
+   POST http://localhost:8080/arb
+   ```
+
+2. **General endpoint with chain parameter**: Specify the chain in the URL path.
+   ```
+   POST http://localhost:8080/ethereum
+   POST http://localhost:8080/optimism
+   POST http://localhost:8080/arbitrum
+   ```
+
+3. **Custom header**: Use the `X-Chain-ID` header to specify the chain.
+   ```
+   POST http://localhost:8080
+   X-Chain-ID: ethereum
+   ```
+4. **Default chain**: If no chain is specified, Bunsan defaults to Ethereum.
+   ```
+   POST http://localhost:8080
+   ```
+
+Example using curl:
+
+```bash
+curl -X POST -H "Content-Type: application/json" --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' http://localhost:8080/eth
 ```
 
 ## Load Balancing Strategies

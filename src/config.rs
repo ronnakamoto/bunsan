@@ -1,6 +1,7 @@
 use crate::error::Result;
 use crate::load_balancer::StrategyType;
 use crate::node::{NodeHealth, NodeList};
+use crate::server::Chain;
 use arc_swap::ArcSwap;
 use config::{Config, File};
 use log::{error, info};
@@ -16,6 +17,7 @@ use tokio::sync::mpsc;
 pub struct ChainConfig {
     pub name: String,
     pub chain_id: u64,
+    pub chain: Option<Chain>,
     pub nodes: Vec<String>,
     pub load_balancing_strategy: StrategyType,
 }
@@ -33,7 +35,25 @@ impl AppConfig {
             .add_source(File::from(path.as_ref()))
             .build()?;
 
-        let app_config: AppConfig = config.try_deserialize()?;
+        let mut app_config: AppConfig = config.try_deserialize()?;
+
+        // Assign the Chain enum based on the chain field or chain_id
+        for chain_config in &mut app_config.chains {
+            if chain_config.chain.is_none() {
+                chain_config.chain = match chain_config.chain_id {
+                    1 => Some(Chain::Ethereum),
+                    10 => Some(Chain::Optimism),
+                    42161 => Some(Chain::Arbitrum),
+                    // Add more mappings as needed
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "Unsupported chain ID: {}",
+                            chain_config.chain_id
+                        ))
+                    }
+                };
+            }
+        }
 
         if app_config.update_interval == 0 {
             return Err(anyhow::anyhow!("update_interval must be greater than 0"));
