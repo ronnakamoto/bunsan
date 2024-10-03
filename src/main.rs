@@ -72,6 +72,7 @@ update_interval = 60
 [[chains]]
 name = "Ethereum"
 chain_id = 1
+chain = "Ethereum"
 load_balancing_strategy = "LeastConnections"
 nodes = [
     "https://1rpc.io/eth",
@@ -83,6 +84,7 @@ nodes = [
 [[chains]]
 name = "Optimism"
 chain_id = 10
+chain = "Optimism"
 load_balancing_strategy = "RoundRobin"
 nodes = [
     "https://1rpc.io/op",
@@ -92,6 +94,7 @@ nodes = [
 [[chains]]
 name = "Arbitrum One"
 chain_id = 42161
+chain = "Arbitrum"
 load_balancing_strategy = "Random"
 nodes = [
     "https://1rpc.io/arb",
@@ -200,6 +203,7 @@ async fn check_health(config_path: &PathBuf) -> Result<()> {
     let mut table = Table::new();
     table.add_row(Row::new(vec![
         Cell::new("Chain").style_spec("bFc"),
+        Cell::new("Chain ID").style_spec("bFc"),
         Cell::new("Node URL").style_spec("bFc"),
         Cell::new("Status").style_spec("bFc"),
     ]));
@@ -213,7 +217,8 @@ async fn check_health(config_path: &PathBuf) -> Result<()> {
                 "Unhealthy".red()
             };
             table.add_row(Row::new(vec![
-                Cell::new(&chain.name),
+                Cell::new(&format!("{:?}", chain.chain)),
+                Cell::new(&chain.chain_id.to_string()),
                 Cell::new(node),
                 Cell::new(&status.to_string()),
             ]));
@@ -235,7 +240,10 @@ fn show_config(config_path: &PathBuf, json: bool) -> Result<()> {
         println!("Update interval: {} seconds", app_config.update_interval);
         println!("Chains:");
         for chain in &app_config.chains {
-            println!("  Chain: {} (ID: {})", chain.name, chain.chain_id);
+            println!(
+                "  Chain: {:?} - {} (ID: {})",
+                chain.chain, chain.name, chain.chain_id
+            );
             println!(
                 "    Load balancing strategy: {:?}",
                 chain.load_balancing_strategy
@@ -276,6 +284,7 @@ async fn list_nodes(config_path: &PathBuf) -> Result<()> {
     let mut table = Table::new();
     table.add_row(Row::new(vec![
         Cell::new("Chain").style_spec("bFc"),
+        Cell::new("Chain ID").style_spec("bFc"),
         Cell::new("Node URL").style_spec("bFc"),
         Cell::new("Health").style_spec("bFc"),
         Cell::new("Connections").style_spec("bFc"),
@@ -291,7 +300,8 @@ async fn list_nodes(config_path: &PathBuf) -> Result<()> {
                     "Unhealthy".red()
                 };
                 table.add_row(Row::new(vec![
-                    Cell::new(&chain.name),
+                    Cell::new(&format!("{:?}", chain.chain)),
+                    Cell::new(&chain.chain_id.to_string()),
                     Cell::new(&node.url),
                     Cell::new(&health_status.to_string()),
                     Cell::new(&node.get_connections().to_string()),

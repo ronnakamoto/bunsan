@@ -1,6 +1,7 @@
 use crate::config::AppConfig;
 use crate::load_balancer::{LoadBalancingStrategy, StrategyType};
 use crate::node::NodeList;
+use crate::server::Chain;
 use arc_swap::ArcSwap;
 use log::{debug, info, warn};
 use rand::Rng;
@@ -9,6 +10,7 @@ use std::time::{Duration, Instant};
 use tokio::time;
 
 pub struct BenchmarkResult {
+    pub chain: Option<Chain>,
     pub chain_id: u64,
     pub chain_name: String,
     pub strategy: StrategyType,
@@ -28,17 +30,20 @@ pub async fn run_benchmark(
     info!("Starting benchmark run for all chains and strategies");
     let mut results = Vec::new();
 
-    for chain in &config.chains {
+    for chain_config in &config.chains {
         info!(
             "Benchmarking chain: {} (ID: {})",
-            chain.name, chain.chain_id
+            chain_config.name, chain_config.chain_id
         );
-        let strategy = chain.load_balancing_strategy.create_strategy();
-        let nodes = Arc::new(ArcSwap::from_pointee(NodeList::new(chain.nodes.clone())));
+        let strategy = chain_config.load_balancing_strategy.create_strategy();
+        let nodes = Arc::new(ArcSwap::from_pointee(NodeList::new(
+            chain_config.nodes.clone(),
+        )));
         let result = benchmark_strategy(
-            chain.chain_id,
-            chain.name.clone(),
-            chain.load_balancing_strategy,
+            chain_config.chain,
+            chain_config.chain_id,
+            chain_config.name.clone(),
+            chain_config.load_balancing_strategy,
             strategy,
             nodes,
             duration,
@@ -53,6 +58,7 @@ pub async fn run_benchmark(
 }
 
 async fn benchmark_strategy(
+    chain: Option<Chain>,
     chain_id: u64,
     chain_name: String,
     strategy_type: StrategyType,
@@ -62,8 +68,8 @@ async fn benchmark_strategy(
     requests_per_second: u64,
 ) -> BenchmarkResult {
     info!(
-        "Starting benchmark for chain ID: {}, strategy: {:?}",
-        chain_id, strategy_type
+        "Starting benchmark for chain: {:?} (ID: {}), strategy: {:?}",
+        chain, chain_id, strategy_type
     );
     let mut rng = rand::thread_rng();
 
@@ -110,13 +116,14 @@ async fn benchmark_strategy(
     };
 
     info!(
-        "Benchmark completed for chain ID: {}, strategy: {:?}",
-        chain_id, strategy_type
+        "Benchmark completed for chain: {:?} (ID: {}), strategy: {:?}",
+        chain, chain_id, strategy_type
     );
     info!("Total requests: {}", total_requests);
     info!("Total time: {:?}", total_time);
 
     BenchmarkResult {
+        chain,
         chain_id,
         chain_name,
         strategy: strategy_type,
@@ -131,7 +138,10 @@ async fn benchmark_strategy(
 
 pub fn print_benchmark_results(results: &[BenchmarkResult]) {
     for result in results {
-        info!("Chain: {} (ID: {})", result.chain_name, result.chain_id);
+        info!(
+            "Chain: {:?} - {} (ID: {})",
+            result.chain, result.chain_name, result.chain_id
+        );
         info!("Strategy: {:?}", result.strategy);
         info!("Total requests: {}", result.total_requests);
         info!("Total time: {:?}", result.total_time);
