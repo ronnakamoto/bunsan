@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 use tokio::time;
 
 pub struct BenchmarkResult {
+    pub chain_id: u64,
+    pub chain_name: String,
     pub strategy: StrategyType,
     pub total_requests: u64,
     pub total_time: Duration,
@@ -23,20 +25,22 @@ pub async fn run_benchmark(
     duration: Duration,
     requests_per_second: u64,
 ) -> Vec<BenchmarkResult> {
-    info!("Starting benchmark run for all strategies");
+    info!("Starting benchmark run for all chains and strategies");
     let mut results = Vec::new();
 
-    for strategy_type in [
-        StrategyType::RoundRobin,
-        StrategyType::LeastConnections,
-        StrategyType::Random,
-    ] {
-        info!("Benchmarking strategy: {:?}", strategy_type);
-        let strategy = strategy_type.create_strategy();
+    for chain in &config.chains {
+        info!(
+            "Benchmarking chain: {} (ID: {})",
+            chain.name, chain.chain_id
+        );
+        let strategy = chain.load_balancing_strategy.create_strategy();
+        let nodes = Arc::new(ArcSwap::from_pointee(NodeList::new(chain.nodes.clone())));
         let result = benchmark_strategy(
-            config,
-            strategy_type,
+            chain.chain_id,
+            chain.name.clone(),
+            chain.load_balancing_strategy,
             strategy,
+            nodes,
             duration,
             requests_per_second,
         )
@@ -44,19 +48,23 @@ pub async fn run_benchmark(
         results.push(result);
     }
 
-    info!("Benchmark run completed for all strategies");
+    info!("Benchmark run completed for all chains and strategies");
     results
 }
 
 async fn benchmark_strategy(
-    config: &AppConfig,
+    chain_id: u64,
+    chain_name: String,
     strategy_type: StrategyType,
     strategy: Box<dyn LoadBalancingStrategy>,
+    nodes: Arc<ArcSwap<NodeList>>,
     duration: Duration,
     requests_per_second: u64,
 ) -> BenchmarkResult {
-    info!("Starting benchmark for strategy: {:?}", strategy_type);
-    let nodes = Arc::new(ArcSwap::from_pointee(NodeList::new(config.nodes.clone())));
+    info!(
+        "Starting benchmark for chain ID: {}, strategy: {:?}",
+        chain_id, strategy_type
+    );
     let mut rng = rand::thread_rng();
 
     let start_time = Instant::now();
@@ -101,11 +109,16 @@ async fn benchmark_strategy(
         Duration::new(0, 0)
     };
 
-    info!("Benchmark completed for strategy: {:?}", strategy_type);
+    info!(
+        "Benchmark completed for chain ID: {}, strategy: {:?}",
+        chain_id, strategy_type
+    );
     info!("Total requests: {}", total_requests);
     info!("Total time: {:?}", total_time);
 
     BenchmarkResult {
+        chain_id,
+        chain_name,
         strategy: strategy_type,
         total_requests,
         total_time,
@@ -118,6 +131,7 @@ async fn benchmark_strategy(
 
 pub fn print_benchmark_results(results: &[BenchmarkResult]) {
     for result in results {
+        info!("Chain: {} (ID: {})", result.chain_name, result.chain_id);
         info!("Strategy: {:?}", result.strategy);
         info!("Total requests: {}", result.total_requests);
         info!("Total time: {:?}", result.total_time);

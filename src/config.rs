@@ -7,16 +7,24 @@ use log::{error, info};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct ChainConfig {
+    pub name: String,
+    pub chain_id: u64,
+    pub nodes: Vec<String>,
+    pub load_balancing_strategy: StrategyType,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct AppConfig {
     pub server_addr: String,
     pub update_interval: u64,
-    pub nodes: Vec<String>,
-    pub load_balancing_strategy: StrategyType,
+    pub chains: Vec<ChainConfig>,
 }
 
 impl AppConfig {
@@ -30,17 +38,26 @@ impl AppConfig {
         if app_config.update_interval == 0 {
             return Err(anyhow::anyhow!("update_interval must be greater than 0"));
         }
-        if app_config.nodes.is_empty() {
-            return Err(anyhow::anyhow!("At least one node must be specified"));
+        if app_config.chains.is_empty() {
+            return Err(anyhow::anyhow!("At least one chain must be specified"));
+        }
+        for chain in &app_config.chains {
+            if chain.nodes.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "At least one node must be specified for each chain"
+                ));
+            }
         }
 
         Ok(app_config)
     }
 }
 
+pub type ChainNodeList = HashMap<u64, Arc<ArcSwap<NodeList>>>;
+
 pub async fn watch_config_file<P: AsRef<Path>>(
     path: P,
-    nodes: Arc<ArcSwap<NodeList>>,
+    chain_nodes: Arc<ArcSwap<ChainNodeList>>,
     client: Client,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::channel(1);
@@ -60,7 +77,7 @@ pub async fn watch_config_file<P: AsRef<Path>>(
         if matches!(event.kind, EventKind::Modify(_)) {
             info!("Configuration file changed, reloading...");
 
-            if let Err(e) = reload_configuration(&path, &nodes, &client).await {
+            if let Err(e) = reload_configuration(&path, &chain_nodes, &client).await {
                 error!("Failed to reload configuration: {}", e);
             }
         }
@@ -71,24 +88,31 @@ pub async fn watch_config_file<P: AsRef<Path>>(
 
 async fn reload_configuration<P: AsRef<Path>>(
     path: P,
-    nodes: &Arc<ArcSwap<NodeList>>,
+    chain_nodes: &Arc<ArcSwap<ChainNodeList>>,
     client: &Client,
 ) -> Result<()> {
     let app_config = AppConfig::load(path)?;
 
-    let mut node_health = Vec::new();
-    for url in app_config.nodes {
-        let health = crate::health::check_node_health(client, &url).await;
-        node_health.push(NodeHealth::new(url, health));
+    let mut new_chain_nodes = ChainNodeList::new();
+
+    for chain in &app_config.chains {
+        let mut node_health = Vec::new();
+        for url in &chain.nodes {
+            let health = crate::health::check_node_health(client, url).await;
+            node_health.push(NodeHealth::new(url.clone(), health));
+        }
+
+        let new_node_list = Arc::new(ArcSwap::from_pointee(NodeList::new_with_health(
+            node_health,
+        )));
+        new_chain_nodes.insert(chain.chain_id, new_node_list);
     }
 
-    let new_node_list = Arc::new(NodeList::new_with_health(node_health));
-
-    nodes.store(new_node_list);
+    chain_nodes.store(Arc::new(new_chain_nodes));
 
     info!(
-        "Configuration reloaded. New node count: {}",
-        nodes.load().nodes.len()
+        "Configuration reloaded. New chain count: {}",
+        app_config.chains.len()
     );
 
     Ok(())
