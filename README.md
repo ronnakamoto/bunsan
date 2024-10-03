@@ -1,5 +1,7 @@
 # Bunsan RPC Loadbalancer
 
+![Dynamic TOML Badge](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fronnakamoto%2Fbunsan%2Frefs%2Fheads%2Fmaster%2FCargo.toml&query=%24.package.version&style=for-the-badge&label=crates.io%20-%20bunsan)
+
 Bunsan(分散) is a high-performance, multi-chain RPC (Remote Procedure Call) load balancer designed for Ethereum and other EVM-compatible blockchain networks. It efficiently distributes incoming RPC requests across multiple nodes, ensuring optimal resource utilization and improved reliability for blockchain applications.
 
 ## Features
@@ -36,6 +38,14 @@ Bunsan supports the following chains out of the box:
 - Neon EVM Devnet (Chain ID: 245022926)
 
 ## Installation
+
+### Using Cargo
+
+If you have Rust installed on your system, you can globally install Bunsan via
+
+```bash
+cargo install bunsan
+```
 
 ### Pre-built Binaries
 
