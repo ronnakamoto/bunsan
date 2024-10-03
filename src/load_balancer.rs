@@ -1,9 +1,11 @@
 use crate::node::NodeHealth;
 use serde::{Deserialize, Serialize};
+use std::any::Any;
 use std::sync::Arc;
 
-pub trait LoadBalancingStrategy: Send + Sync {
+pub trait LoadBalancingStrategy: Send + Sync + Any {
     fn select_node(&self, nodes: &[Arc<NodeHealth>]) -> Option<Arc<NodeHealth>>;
+    fn as_any(&self) -> &dyn Any;
 }
 
 pub struct RoundRobin {
@@ -28,6 +30,10 @@ impl LoadBalancingStrategy for RoundRobin {
             self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % healthy_nodes.len();
         Some(Arc::clone(healthy_nodes[index]))
     }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 pub struct LeastConnections;
@@ -39,6 +45,10 @@ impl LoadBalancingStrategy for LeastConnections {
             .filter(|n| n.healthy)
             .min_by_key(|n| n.get_connections())
             .cloned()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
@@ -52,6 +62,10 @@ impl LoadBalancingStrategy for RandomSelection {
             .choose(&mut rand::thread_rng())
             .cloned()
             .map(Arc::clone)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
@@ -68,6 +82,20 @@ impl StrategyType {
             StrategyType::RoundRobin => Box::new(RoundRobin::new()),
             StrategyType::LeastConnections => Box::new(LeastConnections),
             StrategyType::Random => Box::new(RandomSelection),
+        }
+    }
+}
+
+impl From<Box<dyn LoadBalancingStrategy>> for StrategyType {
+    fn from(strategy: Box<dyn LoadBalancingStrategy>) -> Self {
+        if strategy.as_any().is::<RoundRobin>() {
+            StrategyType::RoundRobin
+        } else if strategy.as_any().is::<LeastConnections>() {
+            StrategyType::LeastConnections
+        } else if strategy.as_any().is::<RandomSelection>() {
+            StrategyType::Random
+        } else {
+            panic!("Unknown strategy type")
         }
     }
 }
