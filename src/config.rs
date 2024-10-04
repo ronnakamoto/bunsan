@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -23,10 +24,20 @@ pub struct ChainConfig {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct ConnectionPoolConfig {
+    pub max_size: u32,
+    pub min_idle: Option<u32>,
+    pub max_lifetime: Option<u64>,
+    pub idle_timeout: Option<u64>,
+    pub connection_timeout: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct AppConfig {
     pub server_addr: String,
     pub update_interval: u64,
     pub chains: Vec<ChainConfig>,
+    pub connection_pool: ConnectionPoolConfig,
 }
 
 impl AppConfig {
@@ -70,21 +81,32 @@ impl AppConfig {
             }
         }
 
-        if app_config.update_interval == 0 {
+        // Validate configuration
+        Self::validate(&app_config)?;
+
+        Ok(app_config)
+    }
+
+    fn validate(config: &AppConfig) -> Result<()> {
+        if config.update_interval == 0 {
             return Err(anyhow::anyhow!("update_interval must be greater than 0"));
         }
-        if app_config.chains.is_empty() {
+        if config.chains.is_empty() {
             return Err(anyhow::anyhow!("At least one chain must be specified"));
         }
-        for chain in &app_config.chains {
+        for chain in &config.chains {
             if chain.nodes.is_empty() {
                 return Err(anyhow::anyhow!(
                     "At least one node must be specified for each chain"
                 ));
             }
         }
-
-        Ok(app_config)
+        if config.connection_pool.max_size == 0 {
+            return Err(anyhow::anyhow!(
+                "connection_pool.max_size must be greater than 0"
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -151,4 +173,14 @@ async fn reload_configuration<P: AsRef<Path>>(
     );
 
     Ok(())
+}
+
+pub fn create_client(config: &ConnectionPoolConfig) -> Client {
+    Client::builder()
+        .timeout(Duration::from_millis(config.connection_timeout))
+        .pool_max_idle_per_host(config.min_idle.map(|v| v as usize).unwrap_or(0))
+        .pool_idle_timeout(config.idle_timeout.map(Duration::from_secs))
+        .pool_max_idle_per_host(config.max_size as usize)
+        .build()
+        .expect("Failed to create HTTP client")
 }

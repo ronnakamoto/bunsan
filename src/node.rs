@@ -33,6 +33,11 @@ impl NodeHealth {
     pub fn get_connections(&self) -> usize {
         self.connections.load(Ordering::SeqCst)
     }
+
+    pub fn update_health(&mut self, healthy: bool) {
+        self.healthy = healthy;
+        self.last_check = Utc::now();
+    }
 }
 
 pub struct NodeList {

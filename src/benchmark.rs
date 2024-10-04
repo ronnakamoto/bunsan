@@ -36,9 +36,9 @@ pub async fn run_benchmark(
             chain_config.name, chain_config.chain_id
         );
         let strategy = chain_config.load_balancing_strategy.create_strategy();
-        let nodes = Arc::new(ArcSwap::from_pointee(NodeList::new(
+        let nodes = Arc::new(ArcSwap::new(Arc::new(NodeList::new(
             chain_config.nodes.clone(),
-        )));
+        ))));
         let result = benchmark_strategy(
             chain_config.chain,
             chain_config.chain_id,

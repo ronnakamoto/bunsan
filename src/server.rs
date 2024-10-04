@@ -3,12 +3,14 @@ use crate::error::Result;
 use crate::load_balancer::LoadBalancingStrategy;
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, Responder};
 use arc_swap::ArcSwap;
-use log::{error, info};
+use log::{error, info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::timeout;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Chain {
@@ -173,22 +175,15 @@ async fn process_request(
             match load_balancer.select_node(&nodes.nodes) {
                 Some(node) => {
                     node.increment_connections();
-                    let response = data.client.post(&node.url).json(&body).send().await;
+                    let result = send_request(&data.client, &node.url, &body, 3).await;
                     node.decrement_connections();
 
-                    match response {
-                        Ok(res) => match res.json::<Value>().await {
-                            Ok(json) => HttpResponse::Ok().json(json),
-                            Err(e) => {
-                                error!("Failed to parse response from {}: {}", node.url, e);
-                                HttpResponse::InternalServerError()
-                                    .json(json!({"error": "Invalid response from node"}))
-                            }
-                        },
+                    match result {
+                        Ok(json) => HttpResponse::Ok().json(json),
                         Err(e) => {
-                            error!("Failed to forward request to {}: {}", node.url, e);
+                            error!("Failed to process request for {}: {}", node.url, e);
                             HttpResponse::InternalServerError()
-                                .json(json!({"error": "Failed to forward request"}))
+                                .json(json!({"error": "Failed to process request"}))
                         }
                     }
                 }
@@ -201,6 +196,43 @@ async fn process_request(
     } else {
         HttpResponse::BadRequest().json(json!({"error": "Unsupported chain ID"}))
     }
+}
+
+async fn send_request(
+    client: &Client,
+    url: &str,
+    body: &Value,
+    max_retries: usize,
+) -> Result<Value> {
+    let mut retries = 0;
+    let mut last_error = None;
+
+    while retries < max_retries {
+        match timeout(Duration::from_secs(10), client.post(url).json(body).send()).await {
+            Ok(Ok(response)) => {
+                if response.status().is_success() {
+                    return Ok(response.json().await?);
+                } else {
+                    warn!("Received non-success status code: {}", response.status());
+                }
+            }
+            Ok(Err(e)) => {
+                warn!("Request failed: {}", e);
+                last_error = Some(e.into());
+            }
+            Err(_) => {
+                warn!("Request timed out");
+                last_error = Some(anyhow::anyhow!("Request timed out").into());
+            }
+        }
+
+        retries += 1;
+        if retries < max_retries {
+            tokio::time::sleep(Duration::from_millis(100 * 2u64.pow(retries as u32))).await;
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Max retries reached").into()))
 }
 
 // Macro to generate chain-specific endpoints
