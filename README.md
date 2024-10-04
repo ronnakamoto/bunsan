@@ -9,6 +9,7 @@ Bunsan(分散) is a high-performance, multi-chain RPC (Remote Procedure Call) lo
 
 - **Multi-Chain Support**: Seamlessly handle requests for multiple EVM-compatible chains (e.g., Ethereum, Optimism, Arbitrum, BNB Smart Chain).
 - **Flexible Chain Selection**: Support multiple methods for specifying the target chain in requests.
+- **Connection Pooling**: Efficiently manage and reuse connections to improve performance and reduce overhead.
 - **Dynamic Load Balancing**: Choose from multiple load balancing strategies (Round Robin, Least Connections, Random) for each chain.
 - **Health Checking**: Continuously monitor node health and automatically route traffic to healthy nodes.
 - **Configuration Hot-Reloading**: Update configuration without restarting the service.
@@ -87,6 +88,13 @@ Example configuration:
 ```toml
 server_addr = "127.0.0.1:8080"
 update_interval = 60
+
+[connection_pool]
+max_size = 100
+min_idle = 10
+max_lifetime = 3600       # in seconds
+idle_timeout = 600        # in seconds
+connection_timeout = 5000 # in milliseconds
 
 [[chains]]
 name = "Ethereum"
