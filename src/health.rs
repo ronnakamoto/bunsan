@@ -1,7 +1,7 @@
 use crate::error::Result;
-use crate::node::{NodeHealth, NodeList};
+use crate::node::NodeList;
 use arc_swap::ArcSwap;
-use log::warn;
+use log::{info, warn};
 use reqwest::Client;
 use serde_json::json;
 use std::sync::Arc;
@@ -44,9 +44,16 @@ pub async fn update_node_health(nodes: &Arc<ArcSwap<NodeList>>, client: &Client)
 
     for node in current_nodes.nodes.iter() {
         let health = check_node_health(client, &node.url).await;
-        updated_nodes.push(NodeHealth::new(node.url.clone(), health));
+        let mut updated_node = (**node).clone();
+        updated_node.update_health(health);
+        if health != node.healthy {
+            info!("Node {} health status changed to {}", node.url, health);
+        }
+        updated_nodes.push(Arc::new(updated_node));
     }
 
-    nodes.store(Arc::new(NodeList::new_with_health(updated_nodes)));
+    nodes.store(Arc::new(NodeList {
+        nodes: updated_nodes,
+    }));
     Ok(())
 }

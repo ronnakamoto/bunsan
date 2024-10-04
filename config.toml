@@ -1,6 +1,13 @@
 server_addr = "127.0.0.1:8080"
 update_interval = 60
 
+[connection_pool]
+max_size = 100
+min_idle = 10
+max_lifetime = 3600       # in seconds
+idle_timeout = 600        # in seconds
+connection_timeout = 5000 # in milliseconds
+
 [[chains]]
 name = "Ethereum"
 chain_id = 1
