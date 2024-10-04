@@ -1,10 +1,10 @@
 use crate::config::{AppConfig, ChainNodeList};
+use crate::connection_pool::{DynamicClientPool, PooledClient};
 use crate::error::Result;
 use crate::load_balancer::LoadBalancingStrategy;
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, Responder};
 use arc_swap::ArcSwap;
 use log::{error, info};
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -86,7 +86,7 @@ impl Chain {
 
 pub struct AppState {
     chain_nodes: Arc<ArcSwap<ChainNodeList>>,
-    client: Client,
+    client_pool: DynamicClientPool,
     load_balancers: Arc<HashMap<u64, Box<dyn LoadBalancingStrategy>>>,
 }
 
@@ -109,7 +109,11 @@ async fn health_check(data: web::Data<AppState>) -> impl Responder {
 
     HttpResponse::Ok().json(json!({
         "status": "ok",
-        "chains": health_info
+        "chains": health_info,
+        "pool_status": {
+            "size": data.client_pool.status().size,
+            "available": data.client_pool.status().available,
+        }
     }))
 }
 
@@ -173,7 +177,18 @@ async fn process_request(
             match load_balancer.select_node(&nodes.nodes) {
                 Some(node) => {
                     node.increment_connections();
-                    let response = data.client.post(&node.url).json(&body).send().await;
+
+                    // Get a client from the pool
+                    let client: PooledClient = match data.client_pool.get().await {
+                        Ok(client) => client,
+                        Err(e) => {
+                            error!("Failed to get client from pool: {}", e);
+                            return HttpResponse::InternalServerError()
+                                .json(json!({"error": "Failed to process request"}));
+                        }
+                    };
+
+                    let response = client.post(&node.url).json(&body).send().await;
                     node.decrement_connections();
 
                     match response {
@@ -266,7 +281,7 @@ async fn shutdown_signal() {
 pub async fn run_server(
     config: AppConfig,
     chain_nodes: Arc<ArcSwap<ChainNodeList>>,
-    client: Client,
+    client_pool: DynamicClientPool,
 ) -> Result<()> {
     let mut load_balancers = HashMap::new();
     for chain in &config.chains {
@@ -278,10 +293,11 @@ pub async fn run_server(
     let load_balancers = Arc::new(load_balancers);
 
     let server = HttpServer::new(move || {
+        let client_pool = client_pool.clone();
         App::new()
             .app_data(web::Data::new(AppState {
                 chain_nodes: Arc::clone(&chain_nodes),
-                client: client.clone(),
+                client_pool,
                 load_balancers: Arc::clone(&load_balancers),
             }))
             .route("/health", web::get().to(health_check))

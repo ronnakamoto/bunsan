@@ -1,5 +1,6 @@
 mod benchmark;
 mod config;
+mod connection_pool;
 mod error;
 mod health;
 mod load_balancer;
@@ -8,6 +9,7 @@ mod server;
 
 use crate::benchmark::{print_benchmark_results, run_benchmark};
 use crate::config::{watch_config_file, AppConfig, ChainNodeList};
+use crate::connection_pool::create_dynamic_pool;
 use crate::error::Result;
 use crate::health::check_node_health;
 use crate::node::NodeList;
@@ -20,7 +22,6 @@ use directories::ProjectDirs;
 use env_logger::{self, Env};
 use log::{error, info, warn};
 use prettytable::{Cell, Row, Table};
-use reqwest::Client;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -68,6 +69,8 @@ enum Commands {
 const DEFAULT_CONFIG: &str = r#"
 server_addr = "127.0.0.1:8080"
 update_interval = 60
+min_pool_size = 5
+max_pool_size = 50
 
 [[chains]]
 name = "Ethereum"
@@ -320,7 +323,7 @@ async fn start_server(config_path: &PathBuf) -> Result<()> {
 
     let app_config = AppConfig::load(config_path)?;
     let chain_nodes = Arc::new(ArcSwap::new(Arc::new(ChainNodeList::new())));
-    let client = Client::new();
+    let client_pool = create_dynamic_pool(app_config.min_pool_size, app_config.max_pool_size);
 
     // Initialize chain_nodes
     {
@@ -335,12 +338,12 @@ async fn start_server(config_path: &PathBuf) -> Result<()> {
     // Start the file watcher in a background task
     {
         let chain_nodes_clone = Arc::clone(&chain_nodes);
-        let client_clone = client.clone();
+        let client_pool_clone = client_pool.clone();
         let config_path_clone = config_path.clone();
 
         tokio::spawn(async move {
             if let Err(e) =
-                watch_config_file(&config_path_clone, chain_nodes_clone, client_clone).await
+                watch_config_file(&config_path_clone, chain_nodes_clone, client_pool_clone).await
             {
                 error!("File watcher error: {}", e);
             }
@@ -350,7 +353,7 @@ async fn start_server(config_path: &PathBuf) -> Result<()> {
     // Start the node health updater
     {
         let chain_nodes_clone = Arc::clone(&chain_nodes);
-        let client_clone = client.clone();
+        let client_pool_clone = client_pool.clone();
         let update_interval = Duration::from_secs(app_config.update_interval);
 
         tokio::spawn(async move {
@@ -358,7 +361,9 @@ async fn start_server(config_path: &PathBuf) -> Result<()> {
                 tokio::time::sleep(update_interval).await;
                 let current_chain_nodes = chain_nodes_clone.load();
                 for nodes in current_chain_nodes.values() {
-                    if let Err(e) = crate::health::update_node_health(nodes, &client_clone).await {
+                    if let Err(e) =
+                        crate::health::update_node_health(nodes, &client_pool_clone).await
+                    {
                         error!("Update nodes task failed: {}", e);
                     }
                 }
@@ -366,13 +371,13 @@ async fn start_server(config_path: &PathBuf) -> Result<()> {
         });
     }
 
-    run_server(app_config, chain_nodes, client).await?;
+    run_server(app_config, chain_nodes, client_pool).await?;
     Ok(())
 }
 
 async fn check_health(config_path: &PathBuf) -> Result<()> {
     let app_config = AppConfig::load(config_path)?;
-    let client = Client::new();
+    let client_pool = create_dynamic_pool(app_config.min_pool_size, app_config.max_pool_size);
 
     let mut table = Table::new();
     table.add_row(Row::new(vec![
@@ -384,6 +389,7 @@ async fn check_health(config_path: &PathBuf) -> Result<()> {
 
     for chain in &app_config.chains {
         for node in &chain.nodes {
+            let client = client_pool.get().await?;
             let health = check_node_health(&client, node).await;
             let status = if health {
                 "Healthy".green()
@@ -412,6 +418,8 @@ fn show_config(config_path: &PathBuf, json: bool) -> Result<()> {
         println!("{}", "Current configuration:".bold());
         println!("Server address: {}", app_config.server_addr);
         println!("Update interval: {} seconds", app_config.update_interval);
+        println!("Minimum pool size: {}", app_config.min_pool_size);
+        println!("Maximum pool size: {}", app_config.max_pool_size);
         println!("Chains:");
         for chain in &app_config.chains {
             println!(
@@ -447,7 +455,7 @@ fn validate_config(config_path: &PathBuf) -> Result<()> {
 
 async fn list_nodes(config_path: &PathBuf) -> Result<()> {
     let app_config = AppConfig::load(config_path)?;
-    let client = Client::new();
+    let client_pool = create_dynamic_pool(app_config.min_pool_size, app_config.max_pool_size);
     let mut chain_nodes = HashMap::new();
 
     for chain in &app_config.chains {
@@ -467,6 +475,7 @@ async fn list_nodes(config_path: &PathBuf) -> Result<()> {
     for chain in &app_config.chains {
         if let Some(nodes) = chain_nodes.get(&chain.chain_id) {
             for node in nodes.load().nodes.iter() {
+                let client = client_pool.get().await?;
                 let health = check_node_health(&client, &node.url).await;
                 let health_status = if health {
                     "Healthy".green()
@@ -508,12 +517,19 @@ async fn run_benchmarks(
     info!("Loading configuration from: {}", config_path.display());
     let app_config = AppConfig::load(config_path)?;
     let benchmark_duration = Duration::from_secs(duration);
+    let client_pool = create_dynamic_pool(app_config.min_pool_size, app_config.max_pool_size);
 
     info!("Starting benchmarks...");
     info!("Duration: {} seconds", duration);
     info!("Requests per second: {}", requests_per_second);
 
-    let results = run_benchmark(&app_config, benchmark_duration, requests_per_second).await;
+    let results = run_benchmark(
+        &app_config,
+        benchmark_duration,
+        requests_per_second,
+        &client_pool,
+    )
+    .await;
     info!("Benchmark completed. Printing results:");
     print_benchmark_results(&results);
 

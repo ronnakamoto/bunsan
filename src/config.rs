@@ -1,3 +1,4 @@
+use crate::connection_pool::DynamicClientPool;
 use crate::error::Result;
 use crate::load_balancer::StrategyType;
 use crate::node::{NodeHealth, NodeList};
@@ -6,7 +7,6 @@ use arc_swap::ArcSwap;
 use config::{Config, File};
 use log::{error, info};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -26,6 +26,8 @@ pub struct ChainConfig {
 pub struct AppConfig {
     pub server_addr: String,
     pub update_interval: u64,
+    pub min_pool_size: usize,
+    pub max_pool_size: usize,
     pub chains: Vec<ChainConfig>,
 }
 
@@ -73,6 +75,14 @@ impl AppConfig {
         if app_config.update_interval == 0 {
             return Err(anyhow::anyhow!("update_interval must be greater than 0"));
         }
+        if app_config.min_pool_size == 0 {
+            return Err(anyhow::anyhow!("min_pool_size must be greater than 0"));
+        }
+        if app_config.max_pool_size < app_config.min_pool_size {
+            return Err(anyhow::anyhow!(
+                "max_pool_size must be greater than or equal to min_pool_size"
+            ));
+        }
         if app_config.chains.is_empty() {
             return Err(anyhow::anyhow!("At least one chain must be specified"));
         }
@@ -93,7 +103,7 @@ pub type ChainNodeList = HashMap<u64, Arc<ArcSwap<NodeList>>>;
 pub async fn watch_config_file<P: AsRef<Path>>(
     path: P,
     chain_nodes: Arc<ArcSwap<ChainNodeList>>,
-    client: Client,
+    client_pool: DynamicClientPool,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::channel(1);
 
@@ -112,7 +122,7 @@ pub async fn watch_config_file<P: AsRef<Path>>(
         if matches!(event.kind, EventKind::Modify(_)) {
             info!("Configuration file changed, reloading...");
 
-            if let Err(e) = reload_configuration(&path, &chain_nodes, &client).await {
+            if let Err(e) = reload_configuration(&path, &chain_nodes, &client_pool).await {
                 error!("Failed to reload configuration: {}", e);
             }
         }
@@ -124,7 +134,7 @@ pub async fn watch_config_file<P: AsRef<Path>>(
 async fn reload_configuration<P: AsRef<Path>>(
     path: P,
     chain_nodes: &Arc<ArcSwap<ChainNodeList>>,
-    client: &Client,
+    client_pool: &DynamicClientPool,
 ) -> Result<()> {
     let app_config = AppConfig::load(path)?;
 
@@ -133,7 +143,8 @@ async fn reload_configuration<P: AsRef<Path>>(
     for chain in &app_config.chains {
         let mut node_health = Vec::new();
         for url in &chain.nodes {
-            let health = crate::health::check_node_health(client, url).await;
+            let client = client_pool.get().await?;
+            let health = crate::health::check_node_health(&client, url).await;
             node_health.push(NodeHealth::new(url.clone(), health));
         }
 

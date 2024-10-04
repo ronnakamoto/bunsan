@@ -1,10 +1,11 @@
 use crate::config::AppConfig;
+use crate::connection_pool::{DynamicClientPool, PooledClient};
 use crate::load_balancer::{LoadBalancingStrategy, StrategyType};
 use crate::node::NodeList;
 use crate::server::Chain;
 use arc_swap::ArcSwap;
 use log::{debug, info, warn};
-use rand::Rng;
+use serde_json::json;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time;
@@ -15,6 +16,8 @@ pub struct BenchmarkResult {
     pub chain_name: String,
     pub strategy: StrategyType,
     pub total_requests: u64,
+    pub successful_requests: u64,
+    pub failed_requests: u64,
     pub total_time: Duration,
     pub requests_per_second: f64,
     pub avg_latency: Duration,
@@ -26,6 +29,7 @@ pub async fn run_benchmark(
     config: &AppConfig,
     duration: Duration,
     requests_per_second: u64,
+    client_pool: &DynamicClientPool,
 ) -> Vec<BenchmarkResult> {
     info!("Starting benchmark run for all chains and strategies");
     let mut results = Vec::new();
@@ -48,6 +52,7 @@ pub async fn run_benchmark(
             nodes,
             duration,
             requests_per_second,
+            client_pool,
         )
         .await;
         results.push(result);
@@ -66,15 +71,17 @@ async fn benchmark_strategy(
     nodes: Arc<ArcSwap<NodeList>>,
     duration: Duration,
     requests_per_second: u64,
+    client_pool: &DynamicClientPool,
 ) -> BenchmarkResult {
     info!(
         "Starting benchmark for chain: {:?} (ID: {}), strategy: {:?}",
         chain, chain_id, strategy_type
     );
-    let mut rng = rand::thread_rng();
 
     let start_time = Instant::now();
     let mut total_requests: u64 = 0;
+    let mut successful_requests: u64 = 0;
+    let mut failed_requests: u64 = 0;
     let mut total_latency = Duration::new(0, 0);
     let mut max_latency = Duration::new(0, 0);
     let mut min_latency = Duration::new(u64::MAX, 0);
@@ -84,22 +91,27 @@ async fn benchmark_strategy(
         total_requests += 1;
 
         if let Some(node) = strategy.select_node(&nodes.load().nodes) {
-            // Simulate request latency (between 10ms and 100ms)
-            let latency = Duration::from_millis(rng.gen_range(10..=100));
-            time::sleep(latency).await;
-
             node.increment_connections();
-            time::sleep(Duration::from_millis(1)).await; // Simulate some work
+            let result = send_benchmark_request(&node.url, client_pool).await;
             node.decrement_connections();
 
             let request_duration = request_start.elapsed();
-            total_latency += request_duration;
-            max_latency = max_latency.max(request_duration);
-            min_latency = min_latency.min(request_duration);
-
-            debug!("Request completed: latency = {:?}", request_duration);
+            match result {
+                Ok(_) => {
+                    successful_requests += 1;
+                    total_latency += request_duration;
+                    max_latency = max_latency.max(request_duration);
+                    min_latency = min_latency.min(request_duration);
+                    debug!("Request completed: latency = {:?}", request_duration);
+                }
+                Err(e) => {
+                    failed_requests += 1;
+                    warn!("Request failed: {}", e);
+                }
+            }
         } else {
             warn!("No available nodes for request");
+            failed_requests += 1;
         }
 
         // Wait for the next request
@@ -109,8 +121,8 @@ async fn benchmark_strategy(
 
     let total_time = start_time.elapsed();
     let requests_per_second = total_requests as f64 / total_time.as_secs_f64();
-    let avg_latency = if total_requests > 0 {
-        Duration::from_nanos((total_latency.as_nanos() / total_requests as u128) as u64)
+    let avg_latency = if successful_requests > 0 {
+        Duration::from_nanos((total_latency.as_nanos() / successful_requests as u128) as u64)
     } else {
         Duration::new(0, 0)
     };
@@ -120,6 +132,8 @@ async fn benchmark_strategy(
         chain, chain_id, strategy_type
     );
     info!("Total requests: {}", total_requests);
+    info!("Successful requests: {}", successful_requests);
+    info!("Failed requests: {}", failed_requests);
     info!("Total time: {:?}", total_time);
 
     BenchmarkResult {
@@ -128,12 +142,33 @@ async fn benchmark_strategy(
         chain_name,
         strategy: strategy_type,
         total_requests,
+        successful_requests,
+        failed_requests,
         total_time,
         requests_per_second,
         avg_latency,
         max_latency,
         min_latency,
     }
+}
+
+async fn send_benchmark_request(
+    url: &str,
+    client_pool: &DynamicClientPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client: PooledClient = client_pool.get().await?;
+    let payload = json!({
+        "jsonrpc": "2.0",
+        "method": "eth_blockNumber",
+        "params": [],
+        "id": 1
+    });
+
+    let response = client.post(url).json(&payload).send().await?;
+    if !response.status().is_success() {
+        return Err(format!("Request failed with status: {}", response.status()).into());
+    }
+    Ok(())
 }
 
 pub fn print_benchmark_results(results: &[BenchmarkResult]) {
@@ -144,6 +179,8 @@ pub fn print_benchmark_results(results: &[BenchmarkResult]) {
         );
         info!("Strategy: {:?}", result.strategy);
         info!("Total requests: {}", result.total_requests);
+        info!("Successful requests: {}", result.successful_requests);
+        info!("Failed requests: {}", result.failed_requests);
         info!("Total time: {:?}", result.total_time);
         info!("Requests per second: {:.2}", result.requests_per_second);
         info!("Average latency: {:?}", result.avg_latency);

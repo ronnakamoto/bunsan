@@ -1,13 +1,13 @@
+use crate::connection_pool::{DynamicClientPool, PooledClient};
 use crate::error::Result;
 use crate::node::{NodeHealth, NodeList};
 use arc_swap::ArcSwap;
 use log::warn;
-use reqwest::Client;
 use serde_json::json;
 use std::sync::Arc;
 use tokio::time::Duration;
 
-pub async fn check_node_health(client: &Client, url: &str) -> bool {
+pub async fn check_node_health(client: &PooledClient, url: &str) -> bool {
     let health_check_payload = json!({
         "jsonrpc": "2.0",
         "method": "web3_clientVersion",
@@ -38,12 +38,16 @@ pub async fn check_node_health(client: &Client, url: &str) -> bool {
     }
 }
 
-pub async fn update_node_health(nodes: &Arc<ArcSwap<NodeList>>, client: &Client) -> Result<()> {
+pub async fn update_node_health(
+    nodes: &Arc<ArcSwap<NodeList>>,
+    client_pool: &DynamicClientPool,
+) -> Result<()> {
     let current_nodes = nodes.load();
     let mut updated_nodes = Vec::new();
 
     for node in current_nodes.nodes.iter() {
-        let health = check_node_health(client, &node.url).await;
+        let client = client_pool.get().await?;
+        let health = check_node_health(&client, &node.url).await;
         updated_nodes.push(NodeHealth::new(node.url.clone(), health));
     }
 
