@@ -39,6 +39,10 @@ Bunsan supports the following chains out of the box:
 - Neon EVM Mainnet (Chain ID: 245022934)
 - Neon EVM Devnet (Chain ID: 245022926)
 
+## Detailed Documentation
+
+Visit Bunsan's Github Wiki page for detailed documentation - https://github.com/ronnakamoto/bunsan/wiki
+
 ## Installation
 
 ### Using Cargo
