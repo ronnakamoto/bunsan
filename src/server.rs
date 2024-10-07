@@ -7,7 +7,7 @@ use log::{error, info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -86,6 +86,12 @@ impl Chain {
     }
 }
 
+#[derive(Deserialize)]
+struct TransactionPath {
+    chain: Option<String>,
+    tx_hash: String,
+}
+
 pub struct AppState {
     chain_nodes: Arc<ArcSwap<ChainNodeList>>,
     client: Client,
@@ -159,6 +165,114 @@ fn determine_chain(req: &HttpRequest, body: &web::Json<Value>) -> Option<Chain> 
 
     // Default to Ethereum if no chain is specified
     Some(Chain::Ethereum)
+}
+
+async fn get_transaction_details(
+    req: HttpRequest,
+    path: web::Path<TransactionPath>,
+    query: web::Query<HashMap<String, String>>,
+    data: web::Data<AppState>,
+) -> HttpResponse {
+    let TransactionPath {
+        chain: chain_path,
+        tx_hash,
+    } = path.into_inner();
+
+    // Determine the chain from the path, header, or default
+    let chain = if let Some(chain_str) = chain_path {
+        Chain::from_str(&chain_str)
+    } else {
+        let empty_body = web::Json(json!({}));
+        determine_chain(&req, &empty_body)
+    };
+
+    // Parse the fields to filter
+    let fields: HashSet<String> = query
+        .get("fields")
+        .map(|f| f.split(',').map(String::from).collect())
+        .unwrap_or_else(HashSet::new);
+
+    match chain {
+        Some(chain) => {
+            let chain_id = chain.to_chain_id();
+            let chain_nodes = data.chain_nodes.load();
+
+            if let Some(nodes) = chain_nodes.get(&chain_id) {
+                let nodes = nodes.load();
+                if let Some(load_balancer) = data.load_balancers.get(&chain_id) {
+                    match load_balancer.select_node(&nodes.nodes) {
+                        Some(node) => {
+                            node.increment_connections();
+                            let result = send_request(
+                                &data.client,
+                                &node.url,
+                                &json!({
+                                    "jsonrpc": "2.0",
+                                    "method": "eth_getTransactionByHash",
+                                    "params": [tx_hash],
+                                    "id": 1
+                                }),
+                                3,
+                            )
+                            .await;
+                            node.decrement_connections();
+
+                            match result {
+                                Ok(json) => {
+                                    let filtered_json = filter_json_fields(json, &fields);
+                                    HttpResponse::Ok().json(filtered_json)
+                                }
+                                Err(e) => {
+                                    error!("Failed to fetch transaction details: {}", e);
+                                    HttpResponse::InternalServerError().json(
+                                        json!({"error": "Failed to fetch transaction details"}),
+                                    )
+                                }
+                            }
+                        }
+                        None => HttpResponse::ServiceUnavailable()
+                            .json(json!({"error": "No available nodes for the specified chain"})),
+                    }
+                } else {
+                    HttpResponse::BadRequest().json(json!({"error": "Invalid chain ID"}))
+                }
+            } else {
+                HttpResponse::BadRequest().json(json!({"error": "Unsupported chain ID"}))
+            }
+        }
+        None => HttpResponse::BadRequest()
+            .json(json!({"error": "Invalid or missing chain specification"})),
+    }
+}
+
+fn filter_json_fields(json: Value, fields: &HashSet<String>) -> Value {
+    if fields.is_empty() {
+        return json;
+    }
+
+    match json {
+        Value::Object(map) => {
+            let filtered_map: serde_json::Map<String, Value> = map
+                .into_iter()
+                .filter_map(|(k, v)| {
+                    if k == "result" {
+                        Some((k, filter_json_fields(v, fields)))
+                    } else if fields.contains(&k) {
+                        Some((k, v))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            Value::Object(filtered_map)
+        }
+        Value::Array(arr) => Value::Array(
+            arr.into_iter()
+                .map(|v| filter_json_fields(v, fields))
+                .collect(),
+        ),
+        _ => json,
+    }
 }
 
 async fn process_request(
@@ -319,6 +433,11 @@ pub async fn run_server(
             .route("/health", web::get().to(health_check))
             .route("/", web::post().to(rpc_endpoint))
             .route("/{chain}", web::post().to(rpc_endpoint))
+            .route("/tx/{tx_hash}", web::get().to(get_transaction_details))
+            .route(
+                "/{chain}/tx/{tx_hash}",
+                web::get().to(get_transaction_details),
+            )
             .service(web::resource("/eth").route(web::post().to(ethereum)))
             .service(web::resource("/op").route(web::post().to(optimism)))
             .service(web::resource("/arb").route(web::post().to(arbitrum)))
