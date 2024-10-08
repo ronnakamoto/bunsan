@@ -166,6 +166,7 @@ Bunsan provides several CLI commands for management and monitoring:
 - `validate`: Validate the configuration file
 - `nodes`: List all connected nodes and their status
 - `benchmark`: Run performance benchmarks
+- `tx`: Retrieve transaction details
 
 For more information on each command, use the `--help` option:
 
@@ -209,6 +210,24 @@ Example using curl:
 
 ```bash
 curl -X POST -H "Content-Type: application/json" --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' http://localhost:8080/eth
+```
+
+### Retrieving Transaction Details
+
+To retrieve transaction details, use the `tx` command:
+
+```bash
+./bunsan tx <TRANSACTION_HASH> [--chain <CHAIN_NAME> | -n <CHAIN_NAME>] [--fields <COMMA_SEPARATED_FIELDS>]
+```
+
+`<TRANSACTION_HASH>`: The transaction hash (required)
+`--chain` or `-n`: The chain name (optional, defaults to Ethereum)
+`--fields`: Comma-separated list of fields to include in the response (optional)
+
+Example:
+
+```bash
+./bunsan tx 0x951455413adad08c7062e8179d13df599210c3af264b83fad519319de82458d4 -n base
 ```
 
 ## Load Balancing Strategies
