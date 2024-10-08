@@ -62,9 +62,50 @@ enum Commands {
         #[arg(short, long, default_value = "100")]
         requests_per_second: u64,
     },
+    Tx {
+        #[arg(required = true)]
+        hash: String,
+        #[arg(short = 'n', long)]
+        chain: Option<String>,
+        #[arg(short, long)]
+        fields: Option<String>,
+    },
 }
 
 const DEFAULT_CONFIG: &str = include_str!("../config.toml");
+
+async fn get_transaction(
+    config_path: &PathBuf,
+    chain: Option<String>,
+    hash: String,
+    fields: Option<String>,
+) -> Result<()> {
+    let app_config = AppConfig::load(config_path)?;
+    let client = create_client(&app_config.connection_pool);
+
+    let url = format!("http://{}/tx/{}", app_config.server_addr, hash);
+    let mut request = client.get(&url);
+
+    if let Some(chain) = chain {
+        request = request.header("X-Chain-ID", chain);
+    }
+
+    if let Some(fields) = fields {
+        request = request.query(&[("fields", fields)]);
+    }
+
+    let response = request.send().await?;
+
+    if response.status().is_success() {
+        let json: serde_json::Value = response.json().await?;
+        println!("{}", serde_json::to_string_pretty(&json)?);
+    } else {
+        let error: serde_json::Value = response.json().await?;
+        eprintln!("Error: {}", error);
+    }
+
+    Ok(())
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -89,6 +130,12 @@ async fn main() -> Result<()> {
             duration,
             requests_per_second,
         }) => run_benchmarks(&config_path, *duration, *requests_per_second).await?,
+        Some(Commands::Tx {
+            chain,
+            hash,
+            fields,
+        }) => get_transaction(&config_path, chain.clone(), hash.clone(), fields.clone()).await?,
+
         None => start_server(&config_path).await?,
     }
 
