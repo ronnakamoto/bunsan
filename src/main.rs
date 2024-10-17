@@ -1,6 +1,7 @@
 mod benchmark;
 mod config;
 mod error;
+mod extensions;
 mod health;
 mod load_balancer;
 mod node;
@@ -9,6 +10,7 @@ mod server;
 use crate::benchmark::{print_benchmark_results, run_benchmark};
 use crate::config::{create_client, watch_config_file, AppConfig, ChainNodeList};
 use crate::error::Result;
+use crate::extensions::manager::ExtensionManager;
 use crate::health::check_node_health;
 use crate::node::NodeList;
 use crate::server::run_server;
@@ -70,6 +72,21 @@ enum Commands {
         #[arg(short, long)]
         fields: Option<String>,
     },
+    InstallExtension {
+        #[arg(required = true)]
+        name: String,
+    },
+    ListExtensions,
+    UninstallExtension {
+        #[arg(required = true)]
+        name: String,
+    },
+    RunExtension {
+        #[arg(required = true)]
+        name: String,
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
 }
 
 const DEFAULT_CONFIG: &str = include_str!("../config.toml");
@@ -119,6 +136,13 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| PathBuf::from("config.toml"))
     });
 
+    let extension_manager = ExtensionManager::new(
+        &ProjectDirs::from("com", "bunsan", "loadbalancer")
+            .map(|proj_dirs| proj_dirs.data_local_dir().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from(".")),
+        &config_path,
+    );
+
     match &cli.command {
         Some(Commands::Start) => start_server(&config_path).await?,
         Some(Commands::Health) => check_health(&config_path).await?,
@@ -135,6 +159,26 @@ async fn main() -> Result<()> {
             hash,
             fields,
         }) => get_transaction(&config_path, chain.clone(), hash.clone(), fields.clone()).await?,
+        Some(Commands::InstallExtension { name }) => {
+            extension_manager.install_extension(name).await?
+        }
+        Some(Commands::ListExtensions) => {
+            let extensions = extension_manager.list_installed_extensions().await?;
+            for ext in extensions {
+                println!(
+                    "{} (v{}): {}",
+                    ext.name,
+                    ext.version,
+                    ext.description.unwrap_or_default()
+                );
+            }
+        }
+        Some(Commands::UninstallExtension { name }) => {
+            extension_manager.uninstall_extension(name).await?
+        }
+        Some(Commands::RunExtension { name, args }) => {
+            extension_manager.run_extension(name, args).await?
+        }
 
         None => start_server(&config_path).await?,
     }
