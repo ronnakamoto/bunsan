@@ -20,6 +20,7 @@ use clap::{Parser, Subcommand};
 use colored::*;
 use directories::ProjectDirs;
 use env_logger::{self, Env};
+use extensions::manager::ParameterSource;
 use log::{error, info, warn};
 use prettytable::{Cell, Row, Table};
 use std::collections::HashMap;
@@ -136,7 +137,7 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| PathBuf::from("config.toml"))
     });
 
-    let extension_manager = ExtensionManager::new(
+    let mut extension_manager = ExtensionManager::new(
         &ProjectDirs::from("com", "bunsan", "loadbalancer")
             .map(|proj_dirs| proj_dirs.data_local_dir().to_path_buf())
             .unwrap_or_else(|| PathBuf::from(".")),
@@ -144,7 +145,7 @@ async fn main() -> Result<()> {
     );
 
     match &cli.command {
-        Some(Commands::Start) => start_server(&config_path).await?,
+        Some(Commands::Start) => start_server(&config_path, &mut extension_manager).await?,
         Some(Commands::Health) => check_health(&config_path).await?,
         Some(Commands::Config { json }) => show_config(&config_path, *json)?,
         Some(Commands::Validate) => validate_config(&config_path)?,
@@ -177,16 +178,112 @@ async fn main() -> Result<()> {
             extension_manager.uninstall_extension(name).await?
         }
         Some(Commands::RunExtension { name, args }) => {
-            extension_manager.run_extension(name, args).await?
+            if args.is_empty() {
+                eprintln!("Error: No command specified for extension '{}'", name);
+                std::process::exit(1);
+            }
+
+            let command = &args[0];
+            let args = &args[1..];
+
+            // Load the extension's routes
+            extension_manager.load_extensions().await?;
+            let routes = extension_manager.get_all_routes();
+
+            // Find the matching route
+            let route = routes
+                .get(name)
+                .and_then(|routes| routes.iter().find(|r| r.command == *command))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Command '{}' not found for extension '{}'", command, name)
+                })?;
+
+            // Parse arguments into a HashMap
+            let mut params = HashMap::new();
+            let mut i = 0;
+            while i < args.len() {
+                if args[i].starts_with("--") {
+                    let param_name = args[i].trim_start_matches("--");
+                    if i + 1 < args.len() {
+                        params.insert(param_name.to_string(), args[i + 1].to_string());
+                        i += 2;
+                    } else {
+                        eprintln!("Error: Missing value for parameter '{}'", param_name);
+                        std::process::exit(1);
+                    }
+                } else {
+                    eprintln!("Error: Invalid argument format '{}'", args[i]);
+                    std::process::exit(1);
+                }
+            }
+
+            // Validate required parameters
+            if let Some(parameters) = &route.parameters {
+                for param in parameters {
+                    if param.required && !params.contains_key(&param.name) {
+                        eprintln!("Error: Missing required parameter '{}'", param.name);
+                        std::process::exit(1);
+                    }
+                }
+            }
+
+            // Prepare parameter hashmaps
+            let mut query_params = HashMap::new();
+            let mut body_params = HashMap::new();
+            let mut header_params = HashMap::new();
+            let mut path_params = HashMap::new();
+
+            if let Some(parameters) = &route.parameters {
+                for param in parameters {
+                    if let Some(value) = params.get(&param.name) {
+                        match param.source {
+                            ParameterSource::Query => {
+                                query_params.insert(param.name.clone(), value.clone());
+                            }
+                            ParameterSource::Body => {
+                                body_params.insert(param.name.clone(), value.clone());
+                            }
+                            ParameterSource::Header => {
+                                header_params.insert(param.name.clone(), value.clone());
+                            }
+                            ParameterSource::Path => {
+                                path_params.insert(param.name.clone(), value.clone());
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Run the extension
+            match extension_manager
+                .run_extension(
+                    name,
+                    route,
+                    &header_params,
+                    &serde_json::to_value(body_params)?,
+                    &query_params,
+                    &path_params,
+                )
+                .await
+            {
+                Ok(result) => println!("{}", result),
+                Err(e) => {
+                    eprintln!("Error running extension: {}", e);
+                    std::process::exit(1);
+                }
+            }
         }
 
-        None => start_server(&config_path).await?,
+        None => start_server(&config_path, &mut extension_manager).await?,
     }
 
     Ok(())
 }
 
-async fn start_server(config_path: &PathBuf) -> Result<()> {
+async fn start_server(
+    config_path: &PathBuf,
+    extension_manager: &mut ExtensionManager,
+) -> Result<()> {
     info!("Starting Bunsan RPC Loadbalancer");
     info!("Using config file: {}", config_path.display());
 
@@ -249,7 +346,18 @@ async fn start_server(config_path: &PathBuf) -> Result<()> {
         });
     }
 
-    run_server(app_config, chain_nodes, client).await?;
+    // Load extensions
+    extension_manager.load_extensions().await?;
+
+    // Create ExtensionState
+    let extension_state = Arc::new(server::ExtensionState {
+        manager: Arc::new(extension_manager.clone()),
+        routes: extension_manager.get_all_routes().clone(),
+    });
+
+    // Run the server
+    run_server(app_config, chain_nodes, client, extension_state).await?;
+
     Ok(())
 }
 

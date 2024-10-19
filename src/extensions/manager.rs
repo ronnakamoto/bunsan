@@ -2,13 +2,17 @@ use anyhow::{Context, Result};
 use dotenv_parser::parse_dotenv;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Command;
+use std::time::Duration;
 use tempfile;
 use tokio::fs as tokio_fs;
+use tokio::process::Command as TokioCommand;
+use tokio::time::timeout;
 use toml_edit::{DocumentMut, Item, Table};
 
 const EXTENSIONS_REPO: &str = "https://github.com/ronnakamoto/bunsan-extensions";
@@ -17,24 +21,54 @@ const DIST_DIR: &str = "dist";
 const ENV_EXAMPLE: &str = ".env.example";
 const PACKAGE_JSON: &str = "package.json";
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ParameterSource {
+    Body,
+    Header,
+    Query,
+    Path,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParameterConfig {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub param_type: String,
+    pub required: bool,
+    pub description: Option<String>,
+    pub source: ParameterSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteConfig {
+    pub path: String,
+    pub method: String,
+    pub command: String,
+    pub description: Option<String>,
+    pub parameters: Option<Vec<ParameterConfig>>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PackageJson {
     pub name: String,
     pub version: String,
     pub description: Option<String>,
     main: String,
-    #[serde(rename = "bunsan")]
-    bunsan_config: Option<BunsanConfig>,
+    bunsan: Option<BunsanConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct BunsanConfig {
     binary_name: Option<String>,
+    routes: Option<Vec<RouteConfig>>,
 }
 
+#[derive(Debug, Clone)]
 pub struct ExtensionManager {
     extensions_path: PathBuf,
     config_path: PathBuf,
+    routes: HashMap<String, Vec<RouteConfig>>,
 }
 
 impl ExtensionManager {
@@ -45,10 +79,69 @@ impl ExtensionManager {
         Self {
             extensions_path,
             config_path: config_path.to_path_buf(),
+            routes: HashMap::new(),
         }
     }
 
-    pub async fn install_extension(&self, extension_name: &str) -> Result<()> {
+    pub async fn load_extensions(&mut self) -> Result<()> {
+        info!(
+            "Starting to load extensions from: {:?}",
+            self.extensions_path
+        );
+        let mut entries = tokio_fs::read_dir(&self.extensions_path).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            if entry.file_type().await?.is_dir() {
+                let package_json_path = entry.path();
+                let package_json_file = package_json_path.join(PACKAGE_JSON);
+                info!("Checking for package.json at: {:?}", package_json_file);
+                if package_json_file.exists() {
+                    info!("Found package.json, attempting to read");
+                    match self.read_package_json(&package_json_path).await {
+                        Ok(package_json) => {
+                            info!("Successfully read package.json for: {}", package_json.name);
+                            if let Some(bunsan_config) = &package_json.bunsan {
+                                if let Some(routes) = &bunsan_config.routes {
+                                    info!(
+                                        "Loaded {} routes for extension: {}",
+                                        routes.len(),
+                                        package_json.name
+                                    );
+                                    self.routes
+                                        .insert(package_json.name.clone(), routes.clone());
+                                } else {
+                                    warn!("No routes defined for extension: {}", package_json.name);
+                                }
+                            } else {
+                                warn!(
+                                    "No Bunsan configuration found for extension: {}",
+                                    package_json.name
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            error!(
+                                "Failed to load extension from {:?}: {}",
+                                package_json_file, e
+                            );
+                        }
+                    }
+                } else {
+                    warn!("No package.json found at: {:?}", package_json_file);
+                }
+            }
+        }
+        info!(
+            "Finished loading extensions. Loaded {} extensions",
+            self.routes.len()
+        );
+        Ok(())
+    }
+
+    pub fn get_all_routes(&self) -> &HashMap<String, Vec<RouteConfig>> {
+        &self.routes
+    }
+
+    pub async fn install_extension(&mut self, extension_name: &str) -> Result<()> {
         info!("Starting installation of extension: {}", extension_name);
         let temp_dir = tempfile::tempdir().context("Failed to create temporary directory")?;
         let repo_path = temp_dir.path();
@@ -74,10 +167,6 @@ impl ExtensionManager {
             );
         }
 
-        // Read and validate the package.json
-        let package_json = self.read_package_json(&extension_path).await?;
-        debug!("package.json read for extension: {}", extension_name);
-
         // Copy all files from the dist folder to the Bunsan extensions directory
         let src_dist_path = extension_path.join(DIST_DIR);
         let dest_path = self.extensions_path.join(extension_name);
@@ -94,6 +183,12 @@ impl ExtensionManager {
         self.update_config_from_env_example(extension_name, &extension_path)
             .await?;
         info!("Updated config.toml with extension environment variables");
+
+        // After successful installation, load the extension's routes
+        let package_json = self.read_package_json(&dest_path).await?;
+        if let Some(routes) = package_json.bunsan.and_then(|c| c.routes) {
+            self.routes.insert(package_json.name.clone(), routes);
+        }
 
         println!("Extension '{}' installed successfully", extension_name);
         println!(
@@ -131,27 +226,74 @@ impl ExtensionManager {
 
     async fn clone_repo(&self, path: &Path) -> Result<()> {
         info!("Cloning repository from: {}", EXTENSIONS_REPO);
-        let output = Command::new("git")
-            .args(&[
-                "clone",
-                "--depth",
-                "1",
-                EXTENSIONS_REPO,
-                path.to_str().unwrap(),
-            ])
-            .output()
-            .context("Failed to execute git clone command")?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            error!("Git clone failed: {}", stderr);
-            anyhow::bail!("Failed to clone extensions repository: {}", stderr);
+        const MAX_RETRIES: u32 = 3;
+        const TIMEOUT_SECONDS: u64 = 60;
+
+        for attempt in 1..=MAX_RETRIES {
+            info!("Clone attempt {} of {}", attempt, MAX_RETRIES);
+
+            let clone_result = timeout(
+                Duration::from_secs(TIMEOUT_SECONDS),
+                TokioCommand::new("git")
+                    .args(&[
+                        "clone",
+                        "--depth",
+                        "1",
+                        EXTENSIONS_REPO,
+                        path.to_str().unwrap(),
+                    ])
+                    .output(),
+            )
+            .await;
+
+            match clone_result {
+                Ok(Ok(output)) => {
+                    if output.status.success() {
+                        info!("Repository cloned successfully");
+                        return Ok(());
+                    } else {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        error!("Git clone failed: {}", stderr);
+                        if attempt == MAX_RETRIES {
+                            anyhow::bail!(
+                                "Failed to clone extensions repository after {} attempts: {}",
+                                MAX_RETRIES,
+                                stderr
+                            );
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    error!("Error executing git command: {}", e);
+                    if attempt == MAX_RETRIES {
+                        anyhow::bail!(
+                            "Failed to execute git command after {} attempts: {}",
+                            MAX_RETRIES,
+                            e
+                        );
+                    }
+                }
+                Err(_) => {
+                    error!(
+                        "Git clone operation timed out after {} seconds",
+                        TIMEOUT_SECONDS
+                    );
+                    if attempt == MAX_RETRIES {
+                        anyhow::bail!(
+                            "Git clone operation timed out after {} attempts",
+                            MAX_RETRIES
+                        );
+                    }
+                }
+            }
+
+            // Wait before retrying
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
 
-        info!("Repository cloned successfully");
-        Ok(())
+        unreachable!("This point should never be reached due to the for loop's logic");
     }
-
     async fn list_directory_contents(&self, path: &Path) -> Result<()> {
         info!("Listing contents of directory: {:?}", path);
         let mut entries = tokio_fs::read_dir(path).await?;
@@ -176,8 +318,32 @@ impl ExtensionManager {
 
     async fn read_package_json(&self, extension_path: &Path) -> Result<PackageJson> {
         let package_json_path = extension_path.join(PACKAGE_JSON);
-        let package_json_content = tokio_fs::read_to_string(package_json_path).await?;
-        let package_json: PackageJson = serde_json::from_str(&package_json_content)?;
+        info!(
+            "Attempting to read package.json from: {:?}",
+            package_json_path
+        );
+
+        let package_json_content = tokio_fs::read_to_string(&package_json_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to read package.json file at {:?}",
+                    package_json_path
+                )
+            })?;
+
+        info!("Successfully read package.json content");
+        debug!("package.json content: {}", package_json_content);
+
+        let package_json: PackageJson =
+            serde_json::from_str(&package_json_content).with_context(|| {
+                format!(
+                    "Failed to parse package.json content from {:?}",
+                    package_json_path
+                )
+            })?;
+
+        info!("Successfully parsed package.json");
         Ok(package_json)
     }
 
@@ -230,11 +396,14 @@ impl ExtensionManager {
         Ok(installed_extensions)
     }
 
-    pub async fn uninstall_extension(&self, extension_name: &str) -> Result<()> {
+    pub async fn uninstall_extension(&mut self, extension_name: &str) -> Result<()> {
         let extension_path = self.extensions_path.join(extension_name);
         if !extension_path.exists() {
             anyhow::bail!("Extension '{}' is not installed", extension_name);
         }
+
+        // Remove the extension's routes
+        self.routes.remove(extension_name);
 
         tokio_fs::remove_dir_all(extension_path).await?;
 
@@ -252,7 +421,15 @@ impl ExtensionManager {
         Ok(())
     }
 
-    pub async fn run_extension(&self, extension_name: &str, args: &[String]) -> Result<()> {
+    pub async fn run_extension(
+        &self,
+        extension_name: &str,
+        route: &RouteConfig,
+        headers: &HashMap<String, String>,
+        body: &serde_json::Value,
+        query_params: &HashMap<String, String>,
+        path_params: &HashMap<String, String>,
+    ) -> Result<String> {
         let extension_path = self.extensions_path.join(extension_name);
         if !extension_path.exists() {
             anyhow::bail!("Extension '{}' is not installed", extension_name);
@@ -260,7 +437,7 @@ impl ExtensionManager {
 
         let package_json = self.read_package_json(&extension_path).await?;
         let binary_name = package_json
-            .bunsan_config
+            .bunsan
             .as_ref()
             .and_then(|config| config.binary_name.clone())
             .unwrap_or_else(|| package_json.name.clone());
@@ -269,6 +446,30 @@ impl ExtensionManager {
 
         if !binary_path.exists() {
             anyhow::bail!("Binary not found for extension '{}'", extension_name);
+        }
+
+        // Prepare CLI arguments based on route parameters
+        let mut cli_args = vec![route.command.clone()];
+
+        if let Some(parameters) = &route.parameters {
+            for param in parameters {
+                let value = match param.source {
+                    ParameterSource::Body => body
+                        .get(&param.name)
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                    ParameterSource::Header => headers.get(&param.name).cloned(),
+                    ParameterSource::Query => query_params.get(&param.name).cloned(),
+                    ParameterSource::Path => path_params.get(&param.name).cloned(),
+                };
+
+                if let Some(value) = value {
+                    cli_args.push(format!("--{}", param.name));
+                    cli_args.push(value);
+                } else if param.required {
+                    anyhow::bail!("Required parameter '{}' is missing", param.name);
+                }
+            }
         }
 
         // Read extension-specific environment variables from config.toml
@@ -291,7 +492,7 @@ impl ExtensionManager {
         }
 
         let output = Command::new(&binary_path)
-            .args(args)
+            .args(&cli_args)
             .envs(&env_vars)
             .output()
             .context("Failed to run extension")?;
@@ -302,8 +503,6 @@ impl ExtensionManager {
         }
 
         let output_message = String::from_utf8_lossy(&output.stdout);
-        println!("{}", output_message);
-
-        Ok(())
+        Ok(output_message.to_string())
     }
 }
