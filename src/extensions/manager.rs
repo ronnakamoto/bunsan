@@ -66,7 +66,7 @@ struct BunsanConfig {
 
 #[derive(Debug, Clone)]
 pub struct ExtensionManager {
-    config_path: PathBuf,
+    pub config_path: PathBuf,
     routes: HashMap<String, Vec<RouteConfig>>,
     executor: ExtensionExecutor,
     extensions_path: PathBuf,
@@ -462,6 +462,7 @@ impl ExtensionManager {
     ) -> Result<String> {
         debug!("Running extension: {} {}", &extension_name, command);
         debug!("Arguments: {:?}", args);
+        debug!("Environment variables: {:?}", env_vars);
         self.executor
             .execute(extension_name, command, args, env_vars)
     }

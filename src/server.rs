@@ -13,7 +13,9 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::fs;
 use tokio::time::timeout;
+use toml_edit::DocumentMut;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Chain {
@@ -458,15 +460,22 @@ async fn handle_extension_http_request(
         })?;
 
     let mut args = Vec::new();
-    let env_vars = HashMap::new();
+    let mut env_vars = HashMap::new();
 
     // Process route parameters
     if let Some(parameters) = &route.parameters {
         for param in parameters {
             let value = match param.source {
                 ParameterSource::Body => body.as_ref().and_then(|b| {
-                    b.0.get(&param.name)
-                        .and_then(|v| v.as_str().map(String::from))
+                    b.0.get(&param.name).and_then(|v| {
+                        if v.is_boolean() {
+                            Some(v.as_bool().unwrap().to_string())
+                        } else if v.is_string() {
+                            Some(v.as_str().unwrap().to_string())
+                        } else {
+                            Some(v.to_string())
+                        }
+                    })
                 }),
                 ParameterSource::Header => req
                     .headers()
@@ -480,8 +489,10 @@ async fn handle_extension_http_request(
             };
 
             if let Some(v) = value {
-                if param.param_type == "boolean" && v == "true" {
-                    args.push(format!("--{}", param.name));
+                if param.param_type == "boolean" {
+                    if v == "true" || v == "1" {
+                        args.push(format!("--{}", param.name));
+                    }
                 } else {
                     args.push(format!("--{}", param.name));
                     args.push(v);
@@ -502,6 +513,26 @@ async fn handle_extension_http_request(
             args.push(value.clone());
         }
     }
+
+    let config_content = fs::read_to_string(&extension_manager.config_path).await?;
+    let doc = config_content.parse::<DocumentMut>()?;
+    if let Some(extensions) = doc["extensions"].as_table() {
+        if let Some(ext_config) = extensions.get(extension_name) {
+            if let Some(ext_table) = ext_config.as_table() {
+                for (key, value) in ext_table.iter() {
+                    if key != "name" {
+                        env_vars.insert(
+                            key.to_string(),
+                            value.as_str().unwrap_or_default().to_string(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Debug log to print environment variables
+    debug!("Environment variables for extension: {:?}", env_vars);
 
     // Execute the extension
     let output = extension_manager
