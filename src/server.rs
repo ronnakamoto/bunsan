@@ -2,9 +2,12 @@ use crate::config::{AppConfig, ChainNodeList};
 use crate::error::Result;
 use crate::extensions::manager::{ExtensionManager, RouteConfig};
 use crate::load_balancer::LoadBalancingStrategy;
-use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, Responder, Scope};
+use actix_web::error::ErrorInternalServerError;
+use actix_web::{
+    web, App, HttpRequest, HttpResponse, HttpServer, Responder, Result as ActixResult, Scope,
+};
 use arc_swap::ArcSwap;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -106,10 +109,18 @@ pub struct AppState {
 }
 
 fn match_path(route_path: &str, actual_path: &str) -> Option<HashMap<String, String>> {
-    let route_segments: Vec<&str> = route_path.split('/').collect();
-    let actual_segments: Vec<&str> = actual_path.split('/').collect();
+    debug!(
+        "Matching route path '{}' with actual path '{}'",
+        route_path, actual_path
+    );
+    let route_segments: Vec<&str> = route_path.split('/').filter(|s| !s.is_empty()).collect();
+    let actual_segments: Vec<&str> = actual_path.split('/').filter(|s| !s.is_empty()).collect();
+
+    debug!("Route segments: {:?}", route_segments);
+    debug!("Actual segments: {:?}", actual_segments);
 
     if route_segments.len() != actual_segments.len() {
+        debug!("Segment count mismatch");
         return None;
     }
 
@@ -119,16 +130,33 @@ fn match_path(route_path: &str, actual_path: &str) -> Option<HashMap<String, Str
         if route_seg.starts_with('{') && route_seg.ends_with('}') {
             let param_name = &route_seg[1..route_seg.len() - 1];
             params.insert(param_name.to_string(), actual_seg.to_string());
+            debug!("Matched parameter: {} = {}", param_name, actual_seg);
         } else if *route_seg != *actual_seg {
+            debug!("Segment mismatch: '{}' != '{}'", route_seg, actual_seg);
             return None;
         }
     }
 
+    debug!(
+        "Path matched successfully. Extracted parameters: {:?}",
+        params
+    );
     Some(params)
 }
 
 fn extract_path_params(route_path: &str, actual_path: &str) -> HashMap<String, String> {
-    match_path(route_path, actual_path).unwrap_or_default()
+    let route_segments: Vec<&str> = route_path.split('/').collect();
+    let actual_segments: Vec<&str> = actual_path.split('/').collect();
+    let mut params = HashMap::new();
+
+    for (route_seg, actual_seg) in route_segments.iter().zip(actual_segments.iter()) {
+        if route_seg.starts_with('{') && route_seg.ends_with('}') {
+            let param_name = &route_seg[1..route_seg.len() - 1];
+            params.insert(param_name.to_string(), actual_seg.to_string());
+        }
+    }
+
+    params
 }
 
 async fn health_check(data: web::Data<AppState>) -> impl Responder {
@@ -442,62 +470,127 @@ async fn shutdown_signal() {
     info!("Shutdown signal received, starting graceful shutdown");
 }
 
+async fn handle_extension_http_request(
+    data: &web::Data<AppState>,
+    extension_name: &str,
+    route_path: &str,
+    req: &HttpRequest,
+    query: &HashMap<String, String>,
+    body: &Option<web::Json<Value>>,
+) -> Result<HttpResponse> {
+    debug!(
+        "Handling HTTP request for extension: {}, path: {}",
+        extension_name, route_path
+    );
+
+    let routes = &data.extension_state.routes;
+    debug!("Available routes: {:?}", routes);
+
+    let extension_routes = routes.get(extension_name).ok_or_else(|| {
+        error!("Extension '{}' not found", extension_name);
+        anyhow::anyhow!("Extension '{}' not found", extension_name)
+    })?;
+
+    let route = extension_routes
+        .iter()
+        .find(|r| r.path.trim_start_matches('/') == route_path && r.method == req.method().as_str())
+        .ok_or_else(|| {
+            error!(
+                "No matching route found for extension '{}' with path '{}'",
+                extension_name, route_path
+            );
+            anyhow::anyhow!(
+                "No matching route found for extension '{}' with path '{}'",
+                extension_name,
+                route_path
+            )
+        })?;
+
+    debug!("Matched route: {:?}", route);
+
+    let headers: HashMap<String, String> = req
+        .headers()
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_string(),
+                value.to_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    debug!("Request headers: {:?}", headers);
+
+    let path_params = extract_path_params(&route.path, route_path);
+    debug!("Extracted path parameters: {:?}", path_params);
+
+    debug!("Calling run_extension");
+    let output = data
+        .extension_state
+        .manager
+        .run_extension(
+            extension_name,
+            &route.command,
+            &[],
+            Some(route),
+            Some(&headers),
+            body.as_ref().map(|b| &b.0),
+            Some(query),
+            Some(&path_params),
+        )
+        .await?;
+
+    debug!("Extension execution successful. Output: {:?}", output);
+    Ok(HttpResponse::Ok().body(output))
+}
+
 async fn handle_extension_request(
     data: web::Data<AppState>,
     req: HttpRequest,
-    path: web::Path<(String, String)>,
     query: web::Query<HashMap<String, String>>,
     body: Option<web::Json<Value>>,
-) -> HttpResponse {
-    let (extension_name, route_path) = path.into_inner();
-    let routes = &data.extension_state.routes;
+) -> ActixResult<HttpResponse> {
+    let path = req.uri().path();
+    info!("Received request for path: {}", path);
+    debug!("Request method: {}", req.method());
+    debug!("Query parameters: {:?}", query);
+    debug!("Request body: {:?}", body);
 
-    if let Some(extension_routes) = routes.get(&extension_name) {
-        if let Some(route) = extension_routes.iter().find(|r| {
-            let path_match = match_path(&r.path, &route_path);
-            path_match.is_some() && r.method == req.method().as_str()
-        }) {
-            let headers: HashMap<String, String> = req
-                .headers()
-                .iter()
-                .map(|(name, value)| {
-                    (
-                        name.as_str().to_string(),
-                        value.to_str().unwrap_or("").to_string(),
-                    )
-                })
-                .collect();
-
-            let body_value = body.map(|b| b.into_inner()).unwrap_or(Value::Null);
-
-            let path_params = extract_path_params(&route.path, &route_path);
-
-            match data
-                .extension_state
-                .manager
-                .run_extension(
-                    &extension_name,
-                    route,
-                    &headers,
-                    &body_value,
-                    &query.into_inner(),
-                    &path_params,
-                )
-                .await
-            {
-                Ok(output) => HttpResponse::Ok().body(output),
-                Err(e) => {
-                    error!("Extension execution failed: {}", e);
-                    HttpResponse::InternalServerError()
-                        .body(format!("Extension execution failed: {}", e))
-                }
-            }
-        } else {
-            HttpResponse::NotFound().body("Route not found")
-        }
-    } else {
-        HttpResponse::NotFound().body("Extension not found")
+    let path_segments: Vec<&str> = path.split('/').collect();
+    if path_segments.len() < 4 {
+        error!("Invalid path: {}", path);
+        return Ok(HttpResponse::BadRequest().body("Invalid extension request path"));
     }
+
+    let extension_name = path_segments[2];
+    let route_path = path_segments[3..].join("/");
+
+    info!(
+        "Handling extension request for '{}' with path '{}'",
+        extension_name, route_path
+    );
+
+    match handle_extension_http_request(
+        &data,
+        extension_name,
+        &route_path,
+        &req,
+        &query.into_inner(),
+        &body,
+    )
+    .await
+    {
+        Ok(response) => Ok(response),
+        Err(e) => {
+            error!("Extension execution failed: {}", e);
+            Ok(HttpResponse::InternalServerError()
+                .body(format!("Extension execution failed: {}", e)))
+        }
+    }
+}
+
+async fn catch_all(req: HttpRequest) -> ActixResult<HttpResponse> {
+    info!("Catch-all route hit: {} {}", req.method(), req.uri());
+    Ok(HttpResponse::NotFound().body(format!("No route found for {} {}", req.method(), req.uri())))
 }
 
 pub async fn run_server(
@@ -556,28 +649,36 @@ pub async fn run_server(
 
         // Add extension routes
         let extensions_scope = extension_state.routes.iter().fold(
-            Scope::new("/extensions"),
+            web::scope("/extensions"),
             |extensions_scope, (extension_name, routes)| {
-                let extension_scope =
-                    routes
-                        .iter()
-                        .fold(Scope::new(extension_name), |extension_scope, route| {
-                            extension_scope.route(
-                                &route.path,
-                                match route.method.as_str() {
-                                    "GET" => web::get().to(handle_extension_request),
-                                    "POST" => web::post().to(handle_extension_request),
-                                    "PUT" => web::put().to(handle_extension_request),
-                                    "DELETE" => web::delete().to(handle_extension_request),
-                                    _ => web::get().to(|| HttpResponse::MethodNotAllowed()),
-                                },
-                            )
-                        });
-                extensions_scope.service(extension_scope)
+                info!("Registering routes for extension: {}", extension_name);
+                routes.iter().fold(extensions_scope, |scope, route| {
+                    let full_path =
+                        format!("/{}/{}", extension_name, route.path.trim_start_matches('/'));
+                    info!("Registering route: {} {}", route.method, full_path);
+                    scope.route(
+                        &full_path,
+                        match route.method.as_str() {
+                            "GET" => web::get().to(handle_extension_request),
+                            "POST" => web::post().to(handle_extension_request),
+                            "PUT" => web::put().to(handle_extension_request),
+                            "DELETE" => web::delete().to(handle_extension_request),
+                            _ => {
+                                debug!("Unknown method {} for route {}", route.method, full_path);
+                                web::route().to(|_req: HttpRequest| async {
+                                    HttpResponse::MethodNotAllowed()
+                                })
+                            }
+                        },
+                    )
+                })
             },
         );
 
+        debug!("Registering extensions_scope to app");
+
         app.service(extensions_scope)
+            .default_service(web::route().to(catch_all))
     })
     .bind(&config.server_addr)?
     .run();

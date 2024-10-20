@@ -106,6 +106,9 @@ impl ExtensionManager {
                                         routes.len(),
                                         package_json.name
                                     );
+                                    for route in routes {
+                                        info!("Route: {} {}", route.method, route.path);
+                                    }
                                     self.routes
                                         .insert(package_json.name.clone(), routes.clone());
                                 } else {
@@ -424,17 +427,22 @@ impl ExtensionManager {
     pub async fn run_extension(
         &self,
         extension_name: &str,
-        route: &RouteConfig,
-        headers: &HashMap<String, String>,
-        body: &serde_json::Value,
-        query_params: &HashMap<String, String>,
-        path_params: &HashMap<String, String>,
+        command: &str,
+        args: &[String],
+        route: Option<&RouteConfig>,
+        headers: Option<&HashMap<String, String>>,
+        body: Option<&serde_json::Value>,
+        query_params: Option<&HashMap<String, String>>,
+        path_params: Option<&HashMap<String, String>>,
     ) -> Result<String> {
+        info!("Starting run_extension for: {}", extension_name);
         let extension_path = self.extensions_path.join(extension_name);
         if !extension_path.exists() {
+            error!("Extension '{}' is not installed", extension_name);
             anyhow::bail!("Extension '{}' is not installed", extension_name);
         }
 
+        info!("Reading package.json for extension: {}", extension_name);
         let package_json = self.read_package_json(&extension_path).await?;
         let binary_name = package_json
             .bunsan
@@ -442,35 +450,67 @@ impl ExtensionManager {
             .and_then(|config| config.binary_name.clone())
             .unwrap_or_else(|| package_json.name.clone());
 
+        info!("Binary name for extension: {}", binary_name);
         let binary_path = extension_path.join(&binary_name);
 
         if !binary_path.exists() {
+            error!(
+                "Binary not found for extension '{}' at {:?}",
+                extension_name, binary_path
+            );
             anyhow::bail!("Binary not found for extension '{}'", extension_name);
         }
 
-        // Prepare CLI arguments based on route parameters
-        let mut cli_args = vec![route.command.clone()];
+        // Prepare CLI arguments
+        let mut cli_args = vec![command.to_string()];
+        cli_args.extend_from_slice(args);
 
-        if let Some(parameters) = &route.parameters {
-            for param in parameters {
-                let value = match param.source {
-                    ParameterSource::Body => body
-                        .get(&param.name)
-                        .and_then(|v| v.as_str())
-                        .map(String::from),
-                    ParameterSource::Header => headers.get(&param.name).cloned(),
-                    ParameterSource::Query => query_params.get(&param.name).cloned(),
-                    ParameterSource::Path => path_params.get(&param.name).cloned(),
-                };
+        // If route is provided, add parameters from the route configuration
+        if let Some(route) = route {
+            info!("Processing route configuration: {:?}", route);
+            if let Some(parameters) = &route.parameters {
+                for param in parameters {
+                    info!("Processing parameter: {:?}", param);
+                    let value = match param.source {
+                        ParameterSource::Body => body.and_then(|b| {
+                            b.get(&param.name)
+                                .and_then(|v| v.as_str())
+                                .map(String::from)
+                        }),
+                        ParameterSource::Header => {
+                            headers.and_then(|h| h.get(&param.name).cloned())
+                        }
+                        ParameterSource::Query => {
+                            query_params.and_then(|q| q.get(&param.name).cloned())
+                        }
+                        ParameterSource::Path => {
+                            path_params.and_then(|p| p.get(&param.name).cloned())
+                        }
+                    };
 
-                if let Some(value) = value {
-                    cli_args.push(format!("--{}", param.name));
-                    cli_args.push(value);
-                } else if param.required {
-                    anyhow::bail!("Required parameter '{}' is missing", param.name);
+                    match value {
+                        Some(v) => {
+                            cli_args.push(format!("--{}", param.name));
+                            cli_args.push(v.clone());
+                            info!("Added parameter: {} = {}", param.name, v);
+                        }
+                        None if param.required => {
+                            error!("Required parameter '{}' is missing", param.name);
+                            anyhow::bail!("Required parameter '{}' is missing", param.name);
+                        }
+                        None => {
+                            info!("Optional parameter '{}' not provided", param.name);
+                        }
+                    }
                 }
+            } else {
+                info!("No parameters defined for this route");
             }
+        } else {
+            info!("No route configuration provided");
         }
+
+        info!("Final CLI args: {:?}", cli_args);
 
         // Read extension-specific environment variables from config.toml
         let config_content = tokio_fs::read_to_string(&self.config_path).await?;
@@ -485,12 +525,21 @@ impl ExtensionManager {
                                 key.to_string(),
                                 value.as_str().unwrap_or_default().to_string(),
                             );
+                            info!(
+                                "Added env var: {} = {}",
+                                key,
+                                value.as_str().unwrap_or_default()
+                            );
                         }
                     }
                 }
             }
         }
 
+        info!(
+            "Executing binary: {:?} with args: {:?}",
+            binary_path, cli_args
+        );
         let output = Command::new(&binary_path)
             .args(&cli_args)
             .envs(&env_vars)
@@ -499,10 +548,23 @@ impl ExtensionManager {
 
         if !output.status.success() {
             let error_message = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Extension '{}' failed: {}", extension_name, error_message);
+            error!(
+                "Extension '{}' failed with status {:?}: {}",
+                extension_name, output.status, error_message
+            );
+            anyhow::bail!(
+                "Extension '{}' failed with status {:?}: {}",
+                extension_name,
+                output.status,
+                error_message
+            );
         }
 
         let output_message = String::from_utf8_lossy(&output.stdout);
+        info!(
+            "Extension '{}' completed successfully. Output: {}",
+            extension_name, output_message
+        );
         Ok(output_message.to_string())
     }
 }

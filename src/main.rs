@@ -178,102 +178,94 @@ async fn main() -> Result<()> {
             extension_manager.uninstall_extension(name).await?
         }
         Some(Commands::RunExtension { name, args }) => {
+            info!("Executing RunExtension command for extension: {}", name);
+            info!("Arguments provided: {:?}", args);
+
             if args.is_empty() {
+                error!("Error: No command specified for extension '{}'", name);
                 eprintln!("Error: No command specified for extension '{}'", name);
                 std::process::exit(1);
             }
 
             let command = &args[0];
-            let args = &args[1..];
+            let command_args = &args[1..];
+            info!("Command: {}, Command args: {:?}", command, command_args);
 
             // Load the extension's routes
+            info!("Loading extensions...");
             extension_manager.load_extensions().await?;
             let routes = extension_manager.get_all_routes();
+            info!("Extensions loaded. Available routes: {:?}", routes.keys());
 
-            // Find the matching route
+            // Find the matching route (for logging purposes only)
             let route = routes
                 .get(name)
-                .and_then(|routes| routes.iter().find(|r| r.command == *command))
-                .ok_or_else(|| {
-                    anyhow::anyhow!("Command '{}' not found for extension '{}'", command, name)
-                })?;
+                .and_then(|routes| routes.iter().find(|r| r.command == *command));
 
-            // Parse arguments into a HashMap
+            if let Some(route) = route {
+                info!("Matching route found: {:?}", route);
+            } else {
+                warn!("No matching route found for command: {}", command);
+            }
+
+            // Prepare parameters
             let mut params = HashMap::new();
             let mut i = 0;
-            while i < args.len() {
-                if args[i].starts_with("--") {
-                    let param_name = args[i].trim_start_matches("--");
-                    if i + 1 < args.len() {
-                        params.insert(param_name.to_string(), args[i + 1].to_string());
+            while i < command_args.len() {
+                if command_args[i].starts_with("--") {
+                    let param_name = &command_args[i][2..]; // Remove "--" prefix
+                    if i + 1 < command_args.len() {
+                        params.insert(param_name.to_string(), command_args[i + 1].clone());
                         i += 2;
                     } else {
+                        error!("Error: Missing value for parameter '{}'", param_name);
                         eprintln!("Error: Missing value for parameter '{}'", param_name);
                         std::process::exit(1);
                     }
                 } else {
-                    eprintln!("Error: Invalid argument format '{}'", args[i]);
-                    std::process::exit(1);
-                }
-            }
-
-            // Validate required parameters
-            if let Some(parameters) = &route.parameters {
-                for param in parameters {
-                    if param.required && !params.contains_key(&param.name) {
-                        eprintln!("Error: Missing required parameter '{}'", param.name);
-                        std::process::exit(1);
-                    }
-                }
-            }
-
-            // Prepare parameter hashmaps
-            let mut query_params = HashMap::new();
-            let mut body_params = HashMap::new();
-            let mut header_params = HashMap::new();
-            let mut path_params = HashMap::new();
-
-            if let Some(parameters) = &route.parameters {
-                for param in parameters {
-                    if let Some(value) = params.get(&param.name) {
-                        match param.source {
-                            ParameterSource::Query => {
-                                query_params.insert(param.name.clone(), value.clone());
-                            }
-                            ParameterSource::Body => {
-                                body_params.insert(param.name.clone(), value.clone());
-                            }
-                            ParameterSource::Header => {
-                                header_params.insert(param.name.clone(), value.clone());
-                            }
-                            ParameterSource::Path => {
-                                path_params.insert(param.name.clone(), value.clone());
+                    // Handle positional arguments
+                    if let Some(route) = route {
+                        if let Some(parameters) = &route.parameters {
+                            if params.len() < parameters.len() {
+                                params.insert(
+                                    parameters[params.len()].name.clone(),
+                                    command_args[i].clone(),
+                                );
                             }
                         }
                     }
+                    i += 1;
                 }
             }
 
+            info!("Parsed parameters: {:?}", params);
+
             // Run the extension
+            info!("Running the extension...");
             match extension_manager
                 .run_extension(
                     name,
+                    command,
+                    command_args,
                     route,
-                    &header_params,
-                    &serde_json::to_value(body_params)?,
-                    &query_params,
-                    &path_params,
+                    None,
+                    Some(&serde_json::to_value(params)?),
+                    None,
+                    None,
                 )
                 .await
             {
-                Ok(result) => println!("{}", result),
+                Ok(result) => {
+                    info!("Extension executed successfully");
+                    println!("{}", result);
+                }
                 Err(e) => {
+                    error!("Error running extension: {}", e);
                     eprintln!("Error running extension: {}", e);
                     std::process::exit(1);
                 }
             }
         }
-
         None => start_server(&config_path, &mut extension_manager).await?,
     }
 
