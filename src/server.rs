@@ -1,10 +1,9 @@
 use crate::config::{AppConfig, ChainNodeList};
 use crate::error::Result;
-use crate::extensions::manager::{ExtensionManager, RouteConfig};
+use crate::extensions::manager::{ExtensionManager, ParameterSource, RouteConfig};
 use crate::load_balancer::LoadBalancingStrategy;
-use actix_web::error::ErrorInternalServerError;
 use actix_web::{
-    web, App, HttpRequest, HttpResponse, HttpServer, Responder, Result as ActixResult, Scope,
+    web, App, HttpRequest, HttpResponse, HttpServer, Responder, Result as ActixResult,
 };
 use arc_swap::ArcSwap;
 use log::{debug, error, info, warn};
@@ -106,42 +105,6 @@ pub struct AppState {
     client: Client,
     load_balancers: Arc<HashMap<u64, Box<dyn LoadBalancingStrategy>>>,
     extension_state: Arc<ExtensionState>,
-}
-
-fn match_path(route_path: &str, actual_path: &str) -> Option<HashMap<String, String>> {
-    debug!(
-        "Matching route path '{}' with actual path '{}'",
-        route_path, actual_path
-    );
-    let route_segments: Vec<&str> = route_path.split('/').filter(|s| !s.is_empty()).collect();
-    let actual_segments: Vec<&str> = actual_path.split('/').filter(|s| !s.is_empty()).collect();
-
-    debug!("Route segments: {:?}", route_segments);
-    debug!("Actual segments: {:?}", actual_segments);
-
-    if route_segments.len() != actual_segments.len() {
-        debug!("Segment count mismatch");
-        return None;
-    }
-
-    let mut params = HashMap::new();
-
-    for (route_seg, actual_seg) in route_segments.iter().zip(actual_segments.iter()) {
-        if route_seg.starts_with('{') && route_seg.ends_with('}') {
-            let param_name = &route_seg[1..route_seg.len() - 1];
-            params.insert(param_name.to_string(), actual_seg.to_string());
-            debug!("Matched parameter: {} = {}", param_name, actual_seg);
-        } else if *route_seg != *actual_seg {
-            debug!("Segment mismatch: '{}' != '{}'", route_seg, actual_seg);
-            return None;
-        }
-    }
-
-    debug!(
-        "Path matched successfully. Extracted parameters: {:?}",
-        params
-    );
-    Some(params)
 }
 
 fn extract_path_params(route_path: &str, actual_path: &str) -> HashMap<String, String> {
@@ -471,34 +434,22 @@ async fn shutdown_signal() {
 }
 
 async fn handle_extension_http_request(
-    data: &web::Data<AppState>,
+    extension_manager: &ExtensionManager,
     extension_name: &str,
     route_path: &str,
     req: &HttpRequest,
     query: &HashMap<String, String>,
     body: &Option<web::Json<Value>>,
 ) -> Result<HttpResponse> {
-    debug!(
-        "Handling HTTP request for extension: {}, path: {}",
-        extension_name, route_path
-    );
-
-    let routes = &data.extension_state.routes;
-    debug!("Available routes: {:?}", routes);
-
-    let extension_routes = routes.get(extension_name).ok_or_else(|| {
-        error!("Extension '{}' not found", extension_name);
-        anyhow::anyhow!("Extension '{}' not found", extension_name)
-    })?;
+    let routes = extension_manager.get_all_routes();
+    let extension_routes = routes
+        .get(extension_name)
+        .ok_or_else(|| anyhow::anyhow!("Extension '{}' not found", extension_name))?;
 
     let route = extension_routes
         .iter()
         .find(|r| r.path.trim_start_matches('/') == route_path && r.method == req.method().as_str())
         .ok_or_else(|| {
-            error!(
-                "No matching route found for extension '{}' with path '{}'",
-                extension_name, route_path
-            );
             anyhow::anyhow!(
                 "No matching route found for extension '{}' with path '{}'",
                 extension_name,
@@ -506,40 +457,57 @@ async fn handle_extension_http_request(
             )
         })?;
 
-    debug!("Matched route: {:?}", route);
+    let mut args = Vec::new();
+    let env_vars = HashMap::new();
 
-    let headers: HashMap<String, String> = req
-        .headers()
-        .iter()
-        .map(|(name, value)| {
-            (
-                name.as_str().to_string(),
-                value.to_str().unwrap_or("").to_string(),
-            )
-        })
-        .collect();
-    debug!("Request headers: {:?}", headers);
+    // Process route parameters
+    if let Some(parameters) = &route.parameters {
+        for param in parameters {
+            let value = match param.source {
+                ParameterSource::Body => body.as_ref().and_then(|b| {
+                    b.0.get(&param.name)
+                        .and_then(|v| v.as_str().map(String::from))
+                }),
+                ParameterSource::Header => req
+                    .headers()
+                    .get(&param.name)
+                    .and_then(|v| v.to_str().ok().map(String::from)),
+                ParameterSource::Query => query.get(&param.name).cloned(),
+                ParameterSource::Path => {
+                    let path_params = extract_path_params(&route.path, route_path);
+                    path_params.get(&param.name).cloned()
+                }
+            };
 
-    let path_params = extract_path_params(&route.path, route_path);
-    debug!("Extracted path parameters: {:?}", path_params);
+            if let Some(v) = value {
+                if param.param_type == "boolean" && v == "true" {
+                    args.push(format!("--{}", param.name));
+                } else {
+                    args.push(format!("--{}", param.name));
+                    args.push(v);
+                }
+            } else if param.required {
+                return Err(anyhow::anyhow!(
+                    "Required parameter '{}' is missing",
+                    param.name
+                ));
+            }
+        }
+    }
 
-    debug!("Calling run_extension");
-    let output = data
-        .extension_state
-        .manager
-        .run_extension(
-            extension_name,
-            &route.command,
-            &[],
-            Some(route),
-            Some(&headers),
-            body.as_ref().map(|b| &b.0),
-            Some(query),
-            Some(&path_params),
-        )
+    // Add query parameters that are not in the route definition
+    for (key, value) in query {
+        if !args.contains(&format!("--{}", key)) {
+            args.push(format!("--{}", key));
+            args.push(value.clone());
+        }
+    }
+
+    // Execute the extension
+    let output = extension_manager
+        .run_extension(extension_name, &route.command, args, env_vars)
         .await?;
 
-    debug!("Extension execution successful. Output: {:?}", output);
     Ok(HttpResponse::Ok().body(output))
 }
 
@@ -570,7 +538,7 @@ async fn handle_extension_request(
     );
 
     match handle_extension_http_request(
-        &data,
+        &data.extension_state.manager,
         extension_name,
         &route_path,
         &req,

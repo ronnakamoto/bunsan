@@ -1,14 +1,14 @@
+use super::executor::ExtensionExecutor;
 use anyhow::{Context, Result};
 use dotenv_parser::parse_dotenv;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::process::Command;
 use std::time::Duration;
-use std::{env, fs};
 use tempfile;
 use tokio::fs as tokio_fs;
 use tokio::process::Command as TokioCommand;
@@ -66,9 +66,10 @@ struct BunsanConfig {
 
 #[derive(Debug, Clone)]
 pub struct ExtensionManager {
-    extensions_path: PathBuf,
     config_path: PathBuf,
     routes: HashMap<String, Vec<RouteConfig>>,
+    executor: ExtensionExecutor,
+    extensions_path: PathBuf,
 }
 
 impl ExtensionManager {
@@ -77,9 +78,10 @@ impl ExtensionManager {
         fs::create_dir_all(&extensions_path).expect("Failed to create extensions directory");
 
         Self {
-            extensions_path,
+            executor: ExtensionExecutor::new(extensions_path.clone()),
             config_path: config_path.to_path_buf(),
             routes: HashMap::new(),
+            extensions_path,
         }
     }
 
@@ -455,158 +457,12 @@ impl ExtensionManager {
         &self,
         extension_name: &str,
         command: &str,
-        args: &[String],
-        route: Option<&RouteConfig>,
-        headers: Option<&HashMap<String, String>>,
-        body: Option<&serde_json::Value>,
-        query_params: Option<&HashMap<String, String>>,
-        path_params: Option<&HashMap<String, String>>,
+        args: Vec<String>,
+        env_vars: HashMap<String, String>,
     ) -> Result<String> {
-        info!("Starting run_extension for: {}", extension_name);
-        let extension_path = self.extensions_path.join(extension_name);
-        if !extension_path.exists() {
-            error!("Extension '{}' is not installed", extension_name);
-            anyhow::bail!("Extension '{}' is not installed", extension_name);
-        }
-
-        info!("Reading package.json for extension: {}", extension_name);
-        let package_json = self.read_package_json(&extension_path).await?;
-        let binary_name = package_json
-            .bunsan
-            .as_ref()
-            .and_then(|config| config.binary_name.clone())
-            .unwrap_or_else(|| package_json.name.clone());
-
-        info!("Binary name for extension: {}", binary_name);
-        // Determine the current platform
-        let os = env::consts::OS;
-        let arch = env::consts::ARCH;
-
-        let platform_folder = match (os, arch) {
-            ("linux", "x86_64") => format!("{}-linux-x64", binary_name),
-            ("macos", "aarch64") => format!("{}-macos-arm64", binary_name),
-            ("macos", "x86_64") => format!("{}-macos-x64", binary_name),
-            ("windows", "x86_64") => format!("{}-win-x64.exe", binary_name),
-            _ => {
-                error!("Unsupported platform: {}-{}", os, arch);
-                anyhow::bail!("Unsupported platform: {}-{}", os, arch);
-            }
-        };
-
-        let binary_path = extension_path.join(platform_folder).join(&binary_name);
-
-        if !binary_path.exists() {
-            error!(
-                "Binary not found for extension '{}' at {:?}",
-                extension_name, binary_path
-            );
-            anyhow::bail!("Binary not found for extension '{}'", extension_name);
-        }
-
-        // Prepare CLI arguments
-        let mut cli_args = vec![command.to_string()];
-        cli_args.extend_from_slice(args);
-
-        // If route is provided, add parameters from the route configuration
-        if let Some(route) = route {
-            info!("Processing route configuration: {:?}", route);
-            if let Some(parameters) = &route.parameters {
-                for param in parameters {
-                    info!("Processing parameter: {:?}", param);
-                    let value = match param.source {
-                        ParameterSource::Body => body.and_then(|b| {
-                            b.get(&param.name)
-                                .and_then(|v| v.as_str())
-                                .map(String::from)
-                        }),
-                        ParameterSource::Header => {
-                            headers.and_then(|h| h.get(&param.name).cloned())
-                        }
-                        ParameterSource::Query => {
-                            query_params.and_then(|q| q.get(&param.name).cloned())
-                        }
-                        ParameterSource::Path => {
-                            path_params.and_then(|p| p.get(&param.name).cloned())
-                        }
-                    };
-
-                    match value {
-                        Some(v) => {
-                            cli_args.push(format!("--{}", param.name));
-                            cli_args.push(v.clone());
-                            info!("Added parameter: {} = {}", param.name, v);
-                        }
-                        None if param.required => {
-                            error!("Required parameter '{}' is missing", param.name);
-                            anyhow::bail!("Required parameter '{}' is missing", param.name);
-                        }
-                        None => {
-                            info!("Optional parameter '{}' not provided", param.name);
-                        }
-                    }
-                }
-            } else {
-                info!("No parameters defined for this route");
-            }
-        } else {
-            info!("No route configuration provided");
-        }
-
-        info!("Final CLI args: {:?}", cli_args);
-
-        // Read extension-specific environment variables from config.toml
-        let config_content = tokio_fs::read_to_string(&self.config_path).await?;
-        let doc = config_content.parse::<DocumentMut>()?;
-        let mut env_vars = std::collections::HashMap::new();
-        if let Some(extensions) = doc["extensions"].as_table() {
-            if let Some(ext_config) = extensions.get(extension_name) {
-                if let Some(ext_table) = ext_config.as_table() {
-                    for (key, value) in ext_table.iter() {
-                        if key != "name" {
-                            env_vars.insert(
-                                key.to_string(),
-                                value.as_str().unwrap_or_default().to_string(),
-                            );
-                            info!(
-                                "Added env var: {} = {}",
-                                key,
-                                value.as_str().unwrap_or_default()
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        info!(
-            "Executing binary: {:?} with args: {:?}",
-            binary_path, cli_args
-        );
-        let output = Command::new(&binary_path)
-            .args(&cli_args)
-            .envs(&env_vars)
-            .output()
-            .context("Failed to run extension")?;
-
-        if !output.status.success() {
-            let error_message = String::from_utf8_lossy(&output.stderr);
-            error!(
-                "Extension '{}' failed with status {:?}: {}",
-                extension_name, output.status, error_message
-            );
-            anyhow::bail!(
-                "Extension '{}' failed with status {:?}: {}",
-                extension_name,
-                output.status,
-                error_message
-            );
-        }
-
-        let output_message = String::from_utf8_lossy(&output.stdout);
-        info!(
-            "Extension '{}' completed successfully. Output: {}",
-            extension_name, output_message
-        );
-        Ok(output_message.to_string())
+        debug!("Running extension: {} {}", &extension_name, command);
+        debug!("Arguments: {:?}", args);
+        self.executor
+            .execute(extension_name, command, args, env_vars)
     }
 }

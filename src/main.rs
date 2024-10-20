@@ -20,7 +20,6 @@ use clap::{Parser, Subcommand};
 use colored::*;
 use directories::ProjectDirs;
 use env_logger::{self, Env};
-use extensions::manager::ParameterSource;
 use log::{error, info, warn};
 use prettytable::{Cell, Row, Table};
 use std::collections::HashMap;
@@ -28,6 +27,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::time::Duration;
+use toml_edit::DocumentMut;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -85,7 +85,9 @@ enum Commands {
     RunExtension {
         #[arg(required = true)]
         name: String,
-        #[arg(last = true)]
+        #[arg(required = true)]
+        command: String,
+        #[arg(last = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
 }
@@ -177,90 +179,39 @@ async fn main() -> Result<()> {
         Some(Commands::UninstallExtension { name }) => {
             extension_manager.uninstall_extension(name).await?
         }
-        Some(Commands::RunExtension { name, args }) => {
-            info!("Executing RunExtension command for extension: {}", name);
-            info!("Arguments provided: {:?}", args);
+        Some(Commands::RunExtension {
+            name,
+            command,
+            args,
+        }) => {
+            // Clone args to create an owned Vec<String>
+            let final_args = args.to_vec();
+            let mut env_vars = HashMap::new();
 
-            if args.is_empty() {
-                error!("Error: No command specified for extension '{}'", name);
-                eprintln!("Error: No command specified for extension '{}'", name);
-                std::process::exit(1);
-            }
-
-            let command = &args[0];
-            let command_args = &args[1..];
-            info!("Command: {}, Command args: {:?}", command, command_args);
-
-            // Load the extension's routes
-            info!("Loading extensions...");
-            extension_manager.load_extensions().await?;
-            let routes = extension_manager.get_all_routes();
-            info!("Extensions loaded. Available routes: {:?}", routes.keys());
-
-            // Find the matching route (for logging purposes only)
-            let route = routes
-                .get(name)
-                .and_then(|routes| routes.iter().find(|r| r.command == *command));
-
-            if let Some(route) = route {
-                info!("Matching route found: {:?}", route);
-            } else {
-                warn!("No matching route found for command: {}", command);
-            }
-
-            // Prepare parameters
-            let mut params = HashMap::new();
-            let mut i = 0;
-            while i < command_args.len() {
-                if command_args[i].starts_with("--") {
-                    let param_name = &command_args[i][2..]; // Remove "--" prefix
-                    if i + 1 < command_args.len() {
-                        params.insert(param_name.to_string(), command_args[i + 1].clone());
-                        i += 2;
-                    } else {
-                        error!("Error: Missing value for parameter '{}'", param_name);
-                        eprintln!("Error: Missing value for parameter '{}'", param_name);
-                        std::process::exit(1);
-                    }
-                } else {
-                    // Handle positional arguments
-                    if let Some(route) = route {
-                        if let Some(parameters) = &route.parameters {
-                            if params.len() < parameters.len() {
-                                params.insert(
-                                    parameters[params.len()].name.clone(),
-                                    command_args[i].clone(),
+            // Load extension-specific environment variables from config.toml
+            let config_content = fs::read_to_string(&config_path)?;
+            let doc = config_content.parse::<DocumentMut>()?;
+            if let Some(extensions) = doc["extensions"].as_table() {
+                if let Some(ext_config) = extensions.get(name) {
+                    if let Some(ext_table) = ext_config.as_table() {
+                        for (key, value) in ext_table.iter() {
+                            if key != "name" {
+                                env_vars.insert(
+                                    key.to_string(),
+                                    value.as_str().unwrap_or_default().to_string(),
                                 );
                             }
                         }
                     }
-                    i += 1;
                 }
             }
 
-            info!("Parsed parameters: {:?}", params);
-
-            // Run the extension
-            info!("Running the extension...");
             match extension_manager
-                .run_extension(
-                    name,
-                    command,
-                    command_args,
-                    route,
-                    None,
-                    Some(&serde_json::to_value(params)?),
-                    None,
-                    None,
-                )
+                .run_extension(name, command, final_args, env_vars)
                 .await
             {
-                Ok(result) => {
-                    info!("Extension executed successfully");
-                    println!("{}", result);
-                }
+                Ok(result) => println!("{}", result),
                 Err(e) => {
-                    error!("Error running extension: {}", e);
                     eprintln!("Error running extension: {}", e);
                     std::process::exit(1);
                 }
