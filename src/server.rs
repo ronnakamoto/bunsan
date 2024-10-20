@@ -1,16 +1,21 @@
 use crate::config::{AppConfig, ChainNodeList};
 use crate::error::Result;
+use crate::extensions::manager::{ExtensionManager, ParameterSource, RouteConfig};
 use crate::load_balancer::LoadBalancingStrategy;
-use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, Responder};
+use actix_web::{
+    web, App, HttpRequest, HttpResponse, HttpServer, Responder, Result as ActixResult,
+};
 use arc_swap::ArcSwap;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::fs;
 use tokio::time::timeout;
+use toml_edit::DocumentMut;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Chain {
@@ -92,10 +97,31 @@ struct TransactionPath {
     tx_hash: String,
 }
 
+pub struct ExtensionState {
+    pub manager: Arc<ExtensionManager>,
+    pub routes: HashMap<String, Vec<RouteConfig>>,
+}
+
 pub struct AppState {
     chain_nodes: Arc<ArcSwap<ChainNodeList>>,
     client: Client,
     load_balancers: Arc<HashMap<u64, Box<dyn LoadBalancingStrategy>>>,
+    extension_state: Arc<ExtensionState>,
+}
+
+fn extract_path_params(route_path: &str, actual_path: &str) -> HashMap<String, String> {
+    let route_segments: Vec<&str> = route_path.split('/').collect();
+    let actual_segments: Vec<&str> = actual_path.split('/').collect();
+    let mut params = HashMap::new();
+
+    for (route_seg, actual_seg) in route_segments.iter().zip(actual_segments.iter()) {
+        if route_seg.starts_with('{') && route_seg.ends_with('}') {
+            let param_name = &route_seg[1..route_seg.len() - 1];
+            params.insert(param_name.to_string(), actual_seg.to_string());
+        }
+    }
+
+    params
 }
 
 async fn health_check(data: web::Data<AppState>) -> impl Responder {
@@ -409,10 +435,168 @@ async fn shutdown_signal() {
     info!("Shutdown signal received, starting graceful shutdown");
 }
 
+async fn handle_extension_http_request(
+    extension_manager: &ExtensionManager,
+    extension_name: &str,
+    route_path: &str,
+    req: &HttpRequest,
+    query: &HashMap<String, String>,
+    body: &Option<web::Json<Value>>,
+) -> Result<HttpResponse> {
+    let routes = extension_manager.get_all_routes();
+    let extension_routes = routes
+        .get(extension_name)
+        .ok_or_else(|| anyhow::anyhow!("Extension '{}' not found", extension_name))?;
+
+    let route = extension_routes
+        .iter()
+        .find(|r| r.path.trim_start_matches('/') == route_path && r.method == req.method().as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No matching route found for extension '{}' with path '{}'",
+                extension_name,
+                route_path
+            )
+        })?;
+
+    let mut args = Vec::new();
+    let mut env_vars = HashMap::new();
+
+    // Process route parameters
+    if let Some(parameters) = &route.parameters {
+        for param in parameters {
+            let value = match param.source {
+                ParameterSource::Body => body.as_ref().and_then(|b| {
+                    b.0.get(&param.name).and_then(|v| {
+                        if v.is_boolean() {
+                            Some(v.as_bool().unwrap().to_string())
+                        } else if v.is_string() {
+                            Some(v.as_str().unwrap().to_string())
+                        } else {
+                            Some(v.to_string())
+                        }
+                    })
+                }),
+                ParameterSource::Header => req
+                    .headers()
+                    .get(&param.name)
+                    .and_then(|v| v.to_str().ok().map(String::from)),
+                ParameterSource::Query => query.get(&param.name).cloned(),
+                ParameterSource::Path => {
+                    let path_params = extract_path_params(&route.path, route_path);
+                    path_params.get(&param.name).cloned()
+                }
+            };
+
+            if let Some(v) = value {
+                if param.param_type == "boolean" {
+                    if v == "true" || v == "1" {
+                        args.push(format!("--{}", param.name));
+                    }
+                } else {
+                    args.push(format!("--{}", param.name));
+                    args.push(v);
+                }
+            } else if param.required {
+                return Err(anyhow::anyhow!(
+                    "Required parameter '{}' is missing",
+                    param.name
+                ));
+            }
+        }
+    }
+
+    // Add query parameters that are not in the route definition
+    for (key, value) in query {
+        if !args.contains(&format!("--{}", key)) {
+            args.push(format!("--{}", key));
+            args.push(value.clone());
+        }
+    }
+
+    let config_content = fs::read_to_string(&extension_manager.config_path).await?;
+    let doc = config_content.parse::<DocumentMut>()?;
+    if let Some(extensions) = doc["extensions"].as_table() {
+        if let Some(ext_config) = extensions.get(extension_name) {
+            if let Some(ext_table) = ext_config.as_table() {
+                for (key, value) in ext_table.iter() {
+                    if key != "name" {
+                        env_vars.insert(
+                            key.to_string(),
+                            value.as_str().unwrap_or_default().to_string(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Debug log to print environment variables
+    debug!("Environment variables for extension: {:?}", env_vars);
+
+    // Execute the extension
+    let output = extension_manager
+        .run_extension(extension_name, &route.command, args, env_vars)
+        .await?;
+
+    Ok(HttpResponse::Ok().body(output))
+}
+
+async fn handle_extension_request(
+    data: web::Data<AppState>,
+    req: HttpRequest,
+    query: web::Query<HashMap<String, String>>,
+    body: Option<web::Json<Value>>,
+) -> ActixResult<HttpResponse> {
+    let path = req.uri().path();
+    info!("Received request for path: {}", path);
+    debug!("Request method: {}", req.method());
+    debug!("Query parameters: {:?}", query);
+    debug!("Request body: {:?}", body);
+
+    let path_segments: Vec<&str> = path.split('/').collect();
+    if path_segments.len() < 4 {
+        error!("Invalid path: {}", path);
+        return Ok(HttpResponse::BadRequest().body("Invalid extension request path"));
+    }
+
+    let extension_name = path_segments[2];
+    let route_path = path_segments[3..].join("/");
+
+    info!(
+        "Handling extension request for '{}' with path '{}'",
+        extension_name, route_path
+    );
+
+    match handle_extension_http_request(
+        &data.extension_state.manager,
+        extension_name,
+        &route_path,
+        &req,
+        &query.into_inner(),
+        &body,
+    )
+    .await
+    {
+        Ok(response) => Ok(response),
+        Err(e) => {
+            error!("Extension execution failed: {}", e);
+            Ok(HttpResponse::InternalServerError()
+                .body(format!("Extension execution failed: {}", e)))
+        }
+    }
+}
+
+async fn catch_all(req: HttpRequest) -> ActixResult<HttpResponse> {
+    info!("Catch-all route hit: {} {}", req.method(), req.uri());
+    Ok(HttpResponse::NotFound().body(format!("No route found for {} {}", req.method(), req.uri())))
+}
+
 pub async fn run_server(
     config: AppConfig,
     chain_nodes: Arc<ArcSwap<ChainNodeList>>,
     client: Client,
+    extension_state: Arc<ExtensionState>,
 ) -> Result<()> {
     let mut load_balancers = HashMap::new();
     for chain in &config.chains {
@@ -424,11 +608,12 @@ pub async fn run_server(
     let load_balancers = Arc::new(load_balancers);
 
     let server = HttpServer::new(move || {
-        App::new()
+        let app = App::new()
             .app_data(web::Data::new(AppState {
                 chain_nodes: Arc::clone(&chain_nodes),
                 client: client.clone(),
                 load_balancers: Arc::clone(&load_balancers),
+                extension_state: Arc::clone(&extension_state),
             }))
             .route("/health", web::get().to(health_check))
             .route("/", web::post().to(rpc_endpoint))
@@ -459,10 +644,45 @@ pub async fn run_server(
             .service(web::resource("/scroll-sepolia").route(web::post().to(scroll_sepolia_testnet)))
             .service(web::resource("/taiko").route(web::post().to(taiko_mainnet)))
             .service(web::resource("/neon").route(web::post().to(neon_evm_mainnet)))
-            .service(web::resource("/neon-devnet").route(web::post().to(neon_evm_devnet)))
+            .service(web::resource("/neon-devnet").route(web::post().to(neon_evm_devnet)));
+
+        // Add extension routes
+        let extensions_scope = extension_state.routes.iter().fold(
+            web::scope("/extensions"),
+            |extensions_scope, (extension_name, routes)| {
+                info!("Registering routes for extension: {}", extension_name);
+                routes.iter().fold(extensions_scope, |scope, route| {
+                    let full_path =
+                        format!("/{}/{}", extension_name, route.path.trim_start_matches('/'));
+                    info!("Registering route: {} {}", route.method, full_path);
+                    scope.route(
+                        &full_path,
+                        match route.method.as_str() {
+                            "GET" => web::get().to(handle_extension_request),
+                            "POST" => web::post().to(handle_extension_request),
+                            "PUT" => web::put().to(handle_extension_request),
+                            "DELETE" => web::delete().to(handle_extension_request),
+                            _ => {
+                                debug!("Unknown method {} for route {}", route.method, full_path);
+                                web::route().to(|_req: HttpRequest| async {
+                                    HttpResponse::MethodNotAllowed()
+                                })
+                            }
+                        },
+                    )
+                })
+            },
+        );
+
+        debug!("Registering extensions_scope to app");
+
+        app.service(extensions_scope)
+            .default_service(web::route().to(catch_all))
     })
     .bind(&config.server_addr)?
     .run();
+
+    info!("Server running at http://{}/", config.server_addr);
 
     tokio::select! {
         result = server => {

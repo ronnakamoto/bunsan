@@ -1,6 +1,7 @@
 mod benchmark;
 mod config;
 mod error;
+mod extensions;
 mod health;
 mod load_balancer;
 mod node;
@@ -9,6 +10,7 @@ mod server;
 use crate::benchmark::{print_benchmark_results, run_benchmark};
 use crate::config::{create_client, watch_config_file, AppConfig, ChainNodeList};
 use crate::error::Result;
+use crate::extensions::manager::ExtensionManager;
 use crate::health::check_node_health;
 use crate::node::NodeList;
 use crate::server::run_server;
@@ -25,6 +27,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::time::Duration;
+use toml_edit::DocumentMut;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -69,6 +72,23 @@ enum Commands {
         chain: Option<String>,
         #[arg(short, long)]
         fields: Option<String>,
+    },
+    InstallExtension {
+        #[arg(required = true)]
+        name: String,
+    },
+    ListExtensions,
+    UninstallExtension {
+        #[arg(required = true)]
+        name: String,
+    },
+    RunExtension {
+        #[arg(required = true)]
+        name: String,
+        #[arg(required = true)]
+        command: String,
+        #[arg(last = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 }
 
@@ -119,8 +139,15 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| PathBuf::from("config.toml"))
     });
 
+    let mut extension_manager = ExtensionManager::new(
+        &ProjectDirs::from("com", "bunsan", "loadbalancer")
+            .map(|proj_dirs| proj_dirs.data_local_dir().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from(".")),
+        &config_path,
+    );
+
     match &cli.command {
-        Some(Commands::Start) => start_server(&config_path).await?,
+        Some(Commands::Start) => start_server(&config_path, &mut extension_manager).await?,
         Some(Commands::Health) => check_health(&config_path).await?,
         Some(Commands::Config { json }) => show_config(&config_path, *json)?,
         Some(Commands::Validate) => validate_config(&config_path)?,
@@ -135,14 +162,71 @@ async fn main() -> Result<()> {
             hash,
             fields,
         }) => get_transaction(&config_path, chain.clone(), hash.clone(), fields.clone()).await?,
+        Some(Commands::InstallExtension { name }) => {
+            extension_manager.install_extension(name).await?
+        }
+        Some(Commands::ListExtensions) => {
+            let extensions = extension_manager.list_installed_extensions().await?;
+            for ext in extensions {
+                println!(
+                    "{} (v{}): {}",
+                    ext.name,
+                    ext.version,
+                    ext.description.unwrap_or_default()
+                );
+            }
+        }
+        Some(Commands::UninstallExtension { name }) => {
+            extension_manager.uninstall_extension(name).await?
+        }
+        Some(Commands::RunExtension {
+            name,
+            command,
+            args,
+        }) => {
+            // Clone args to create an owned Vec<String>
+            let final_args = args.to_vec();
+            let mut env_vars = HashMap::new();
 
-        None => start_server(&config_path).await?,
+            // Load extension-specific environment variables from config.toml
+            let config_content = fs::read_to_string(&config_path)?;
+            let doc = config_content.parse::<DocumentMut>()?;
+            if let Some(extensions) = doc["extensions"].as_table() {
+                if let Some(ext_config) = extensions.get(name) {
+                    if let Some(ext_table) = ext_config.as_table() {
+                        for (key, value) in ext_table.iter() {
+                            if key != "name" {
+                                env_vars.insert(
+                                    key.to_string(),
+                                    value.as_str().unwrap_or_default().to_string(),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            match extension_manager
+                .run_extension(name, command, final_args, env_vars)
+                .await
+            {
+                Ok(result) => println!("{}", result),
+                Err(e) => {
+                    eprintln!("Error running extension: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        None => start_server(&config_path, &mut extension_manager).await?,
     }
 
     Ok(())
 }
 
-async fn start_server(config_path: &PathBuf) -> Result<()> {
+async fn start_server(
+    config_path: &PathBuf,
+    extension_manager: &mut ExtensionManager,
+) -> Result<()> {
     info!("Starting Bunsan RPC Loadbalancer");
     info!("Using config file: {}", config_path.display());
 
@@ -205,7 +289,18 @@ async fn start_server(config_path: &PathBuf) -> Result<()> {
         });
     }
 
-    run_server(app_config, chain_nodes, client).await?;
+    // Load extensions
+    extension_manager.load_extensions().await?;
+
+    // Create ExtensionState
+    let extension_state = Arc::new(server::ExtensionState {
+        manager: Arc::new(extension_manager.clone()),
+        routes: extension_manager.get_all_routes().clone(),
+    });
+
+    // Run the server
+    run_server(app_config, chain_nodes, client, extension_state).await?;
+
     Ok(())
 }
 
