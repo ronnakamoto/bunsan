@@ -3,12 +3,12 @@ use dotenv_parser::parse_dotenv;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Command;
 use std::time::Duration;
+use std::{env, fs};
 use tempfile;
 use tokio::fs as tokio_fs;
 use tokio::process::Command as TokioCommand;
@@ -170,12 +170,39 @@ impl ExtensionManager {
             );
         }
 
+        // Read package.json to get the binary name
+        let package_json = self.read_package_json(&extension_path).await?;
+        let binary_name = package_json
+            .bunsan
+            .as_ref()
+            .and_then(|config| config.binary_name.clone())
+            .unwrap_or_else(|| package_json.name.clone());
+
+        info!("Binary name for extension: {}", binary_name);
+
         // Copy all files from the dist folder to the Bunsan extensions directory
         let src_dist_path = extension_path.join(DIST_DIR);
         let dest_path = self.extensions_path.join(extension_name);
 
         self.copy_dir_all(&src_dist_path, &dest_path).await?;
         info!("Copied all files from dist folder to: {:?}", dest_path);
+
+        // Ensure the binary is executable on Unix-like systems
+        if cfg!(unix) {
+            use std::os::unix::fs::PermissionsExt;
+            let platforms = ["linux-x64", "macos-arm64", "macos-x64"];
+            for platform in platforms.iter() {
+                let binary_path = dest_path
+                    .join(format!("{}-{}", binary_name, platform))
+                    .join(&binary_name);
+                if binary_path.exists() {
+                    let mut perms = tokio_fs::metadata(&binary_path).await?.permissions();
+                    perms.set_mode(0o755); // rwxr-xr-x
+                    tokio_fs::set_permissions(&binary_path, perms).await?;
+                    info!("Set executable permissions for: {:?}", binary_path);
+                }
+            }
+        }
 
         // Copy package.json to the extension directory
         let dest_package_json = dest_path.join(PACKAGE_JSON);
@@ -451,7 +478,22 @@ impl ExtensionManager {
             .unwrap_or_else(|| package_json.name.clone());
 
         info!("Binary name for extension: {}", binary_name);
-        let binary_path = extension_path.join(&binary_name);
+        // Determine the current platform
+        let os = env::consts::OS;
+        let arch = env::consts::ARCH;
+
+        let platform_folder = match (os, arch) {
+            ("linux", "x86_64") => format!("{}-linux-x64", binary_name),
+            ("macos", "aarch64") => format!("{}-macos-arm64", binary_name),
+            ("macos", "x86_64") => format!("{}-macos-x64", binary_name),
+            ("windows", "x86_64") => format!("{}-win-x64.exe", binary_name),
+            _ => {
+                error!("Unsupported platform: {}-{}", os, arch);
+                anyhow::bail!("Unsupported platform: {}-{}", os, arch);
+            }
+        };
+
+        let binary_path = extension_path.join(platform_folder).join(&binary_name);
 
         if !binary_path.exists() {
             error!(
