@@ -1,6 +1,6 @@
 use crate::config::{AppConfig, ChainNodeList};
 use crate::error::Result;
-use crate::extensions::manager::{ExtensionManager, ParameterSource, RouteConfig};
+use crate::extensions::manager::{ArrayStyle, ExtensionManager, ParameterSource, RouteConfig};
 use crate::load_balancer::LoadBalancingStrategy;
 use actix_web::{
     web, App, HttpRequest, HttpResponse, HttpServer, Responder, Result as ActixResult,
@@ -465,37 +465,115 @@ async fn handle_extension_http_request(
     // Process route parameters
     if let Some(parameters) = &route.parameters {
         for param in parameters {
-            let value = match param.source {
-                ParameterSource::Body => body.as_ref().and_then(|b| {
-                    b.0.get(&param.name).and_then(|v| {
-                        if v.is_boolean() {
-                            Some(v.as_bool().unwrap().to_string())
-                        } else if v.is_string() {
-                            Some(v.as_str().unwrap().to_string())
+            let values: Option<Vec<String>> = if param.is_array_type() {
+                match param.source {
+                    ParameterSource::Body => body.as_ref().and_then(|b| {
+                        b.0.get(&param.name).and_then(|v| {
+                            v.as_array().map(|arr| {
+                                arr.iter()
+                                    .map(|elem| {
+                                        if elem.is_boolean() {
+                                            elem.as_bool().unwrap().to_string()
+                                        } else if elem.is_string() {
+                                            elem.as_str().unwrap().to_string()
+                                        } else {
+                                            elem.to_string().trim_matches('"').to_string()
+                                        }
+                                    })
+                                    .collect()
+                            })
+                        })
+                    }),
+                    ParameterSource::Header => req
+                        .headers()
+                        .get(&param.name)
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.split(',').map(str::trim).map(String::from).collect()),
+                    ParameterSource::Query => {
+                        let query_string = req.query_string();
+                        let values: Vec<String> =
+                            url::form_urlencoded::parse(query_string.as_bytes())
+                                .filter(|(k, _)| k == &param.name)
+                                .map(|(_, v)| v.into_owned())
+                                .collect();
+                        if values.is_empty() {
+                            None
                         } else {
-                            Some(v.to_string())
+                            Some(values)
                         }
-                    })
-                }),
-                ParameterSource::Header => req
-                    .headers()
-                    .get(&param.name)
-                    .and_then(|v| v.to_str().ok().map(String::from)),
-                ParameterSource::Query => query.get(&param.name).cloned(),
-                ParameterSource::Path => {
-                    let path_params = extract_path_params(&route.path, route_path);
-                    path_params.get(&param.name).cloned()
+                    }
+                    ParameterSource::Path => {
+                        let path_params = extract_path_params(&route.path, route_path);
+                        path_params
+                            .get(&param.name)
+                            .map(|v| v.split(',').map(str::trim).map(String::from).collect())
+                    }
                 }
+            } else {
+                // Handle non-array parameters
+                let value = match param.source {
+                    ParameterSource::Body => body.as_ref().and_then(|b| {
+                        b.0.get(&param.name).and_then(|v| {
+                            if v.is_boolean() {
+                                Some(v.as_bool().unwrap().to_string())
+                            } else if v.is_string() {
+                                Some(v.as_str().unwrap().to_string())
+                            } else {
+                                Some(v.to_string())
+                            }
+                        })
+                    }),
+                    ParameterSource::Header => req
+                        .headers()
+                        .get(&param.name)
+                        .and_then(|v| v.to_str().ok().map(String::from)),
+                    ParameterSource::Query => query.get(&param.name).cloned(),
+                    ParameterSource::Path => {
+                        let path_params = extract_path_params(&route.path, route_path);
+                        path_params.get(&param.name).cloned()
+                    }
+                };
+                value.map(|v| vec![v])
             };
 
-            if let Some(v) = value {
-                if param.param_type == "boolean" {
-                    if v == "true" || v == "1" {
-                        args.push(format!("--{}", param.name));
+            if let Some(values) = values {
+                match (
+                    param.is_array_type(),
+                    param.array_style.as_ref().unwrap_or(&ArrayStyle::Repeated),
+                ) {
+                    (true, ArrayStyle::Variadic) => {
+                        // Handle variadic arrays (like --args value1 value2 value3)
+                        if !values.is_empty() {
+                            args.push(format!("--{}", param.name));
+                            args.extend(values);
+                        }
                     }
-                } else {
-                    args.push(format!("--{}", param.name));
-                    args.push(v);
+                    (true, ArrayStyle::Repeated) => {
+                        // Handle repeated arrays (like --param value1 --param value2)
+                        for value in values {
+                            args.push(format!("--{}", param.name));
+                            args.push(value);
+                        }
+                    }
+                    (true, ArrayStyle::Concatenated) => {
+                        // Handle concatenated arrays (like --param value1,value2,value3)
+                        if !values.is_empty() {
+                            args.push(format!("--{}", param.name));
+                            args.push(values.join(","));
+                        }
+                    }
+                    (false, _) => {
+                        // Handle non-array types
+                        if param.param_type == "boolean" {
+                            let value = values.first().unwrap();
+                            if value == "true" || value == "1" {
+                                args.push(format!("--{}", param.name));
+                            }
+                        } else {
+                            args.push(format!("--{}", param.name));
+                            args.push(values.first().unwrap().clone());
+                        }
+                    }
                 }
             } else if param.required {
                 return Err(anyhow::anyhow!(
@@ -531,8 +609,8 @@ async fn handle_extension_http_request(
         }
     }
 
-    // Debug log to print environment variables
     debug!("Environment variables for extension: {:?}", env_vars);
+    debug!("Command arguments: {:?}", args);
 
     // Execute the extension
     let output = extension_manager

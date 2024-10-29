@@ -31,6 +31,14 @@ pub enum ParameterSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArrayStyle {
+    Repeated,     // --param value1 --param value2
+    Variadic,     // --param value1 value2
+    Concatenated, // --param value1,value2
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParameterConfig {
     pub name: String,
     #[serde(rename = "type")]
@@ -38,6 +46,14 @@ pub struct ParameterConfig {
     pub required: bool,
     pub description: Option<String>,
     pub source: ParameterSource,
+    #[serde(default)]
+    pub array_style: Option<ArrayStyle>,
+}
+
+impl ParameterConfig {
+    pub fn is_array_type(&self) -> bool {
+        self.param_type.starts_with("array") || self.param_type.ends_with("[]")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
