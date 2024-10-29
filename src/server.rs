@@ -6,6 +6,7 @@ use actix_web::{
     web, App, HttpRequest, HttpResponse, HttpServer, Responder, Result as ActixResult,
 };
 use arc_swap::ArcSwap;
+use chrono::{DateTime, TimeZone, Utc};
 use log::{debug, error, info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -268,6 +269,294 @@ async fn get_transaction_details(
         }
         None => HttpResponse::BadRequest()
             .json(json!({"error": "Invalid or missing chain specification"})),
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EventLog {
+    pub address: String,
+    pub topics: Vec<String>,
+    pub data: String,
+    pub block_number: String,
+    pub transaction_hash: String,
+    pub transaction_index: String,
+    pub block_hash: String,
+    pub log_index: String,
+    pub removed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decoded_event: Option<DecodedEvent>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DecodedEvent {
+    pub name: String,
+    pub params: Vec<DecodedParam>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DecodedParam {
+    pub name: String,
+    pub value: String,
+    pub indexed: bool,
+}
+
+async fn get_transaction_events(
+    req: HttpRequest,
+    path: web::Path<TransactionPath>,
+    _query: web::Query<HashMap<String, String>>,
+    data: web::Data<AppState>,
+) -> HttpResponse {
+    let TransactionPath {
+        chain: chain_path,
+        tx_hash,
+    } = path.into_inner();
+
+    // Determine the chain (reusing existing logic)
+    let chain = if let Some(chain_str) = chain_path {
+        Chain::from_str(&chain_str)
+    } else {
+        let empty_body = web::Json(json!({}));
+        determine_chain(&req, &empty_body)
+    };
+
+    match chain {
+        Some(chain) => {
+            let chain_id = chain.to_chain_id();
+            let chain_nodes = data.chain_nodes.load();
+
+            if let Some(nodes) = chain_nodes.get(&chain_id) {
+                let nodes = nodes.load();
+                if let Some(load_balancer) = data.load_balancers.get(&chain_id) {
+                    match load_balancer.select_node(&nodes.nodes) {
+                        Some(node) => {
+                            node.increment_connections();
+
+                            // First, get the transaction receipt
+                            debug!("Fetching transaction receipt for hash: {}", tx_hash);
+                            let receipt_result = send_request(
+                                &data.client,
+                                &node.url,
+                                &json!({
+                                    "jsonrpc": "2.0",
+                                    "method": "eth_getTransactionReceipt",
+                                    "params": [tx_hash],
+                                    "id": 1
+                                }),
+                                3,
+                            )
+                            .await;
+
+                            // Get block timestamp if receipt exists
+                            let mut block_timestamp = None;
+                            if let Ok(ref receipt) = receipt_result {
+                                debug!("Received transaction receipt: {:?}", receipt);
+                                if let Some(block_number) =
+                                    receipt["result"]["blockNumber"].as_str()
+                                {
+                                    debug!(
+                                        "Fetching block details for block number: {}",
+                                        block_number
+                                    );
+                                    let block_result = send_request(
+                                        &data.client,
+                                        &node.url,
+                                        &json!({
+                                            "jsonrpc": "2.0",
+                                            "method": "eth_getBlockByNumber",
+                                            "params": [block_number, false],
+                                            "id": 1
+                                        }),
+                                        3,
+                                    )
+                                    .await;
+
+                                    if let Ok(block) = block_result {
+                                        debug!("Received block details: {:?}", block);
+                                        if let Some(timestamp_hex) =
+                                            block["result"]["timestamp"].as_str()
+                                        {
+                                            if let Ok(timestamp) = u64::from_str_radix(
+                                                timestamp_hex.trim_start_matches("0x"),
+                                                16,
+                                            ) {
+                                                match Utc.timestamp_opt(timestamp as i64, 0) {
+                                                    chrono::LocalResult::Single(dt) => {
+                                                        block_timestamp = Some(dt);
+                                                        debug!("Parsed block timestamp: {:?}", dt);
+                                                    }
+                                                    chrono::LocalResult::None => {
+                                                        warn!(
+                                                            "Invalid timestamp value: {}",
+                                                            timestamp
+                                                        );
+                                                        // Fallback to Unix epoch
+                                                        if let chrono::LocalResult::Single(dt) =
+                                                            Utc.timestamp_opt(0, 0)
+                                                        {
+                                                            block_timestamp = Some(dt);
+                                                            warn!("Using Unix epoch as fallback timestamp");
+                                                        }
+                                                    }
+                                                    chrono::LocalResult::Ambiguous(dt1, _) => {
+                                                        warn!("Ambiguous timestamp value: {}. Using first option.", timestamp);
+                                                        block_timestamp = Some(dt1);
+                                                    }
+                                                }
+                                            } else {
+                                                warn!(
+                                                    "Failed to parse timestamp hex: {}",
+                                                    timestamp_hex
+                                                );
+                                            }
+                                        } else {
+                                            warn!("No timestamp found in block data");
+                                        }
+                                    } else if let Err(e) = block_result {
+                                        warn!("Failed to fetch block details: {}", e);
+                                    }
+                                }
+                            }
+
+                            node.decrement_connections();
+
+                            match receipt_result {
+                                Ok(receipt) => {
+                                    if let Some(result) = receipt.get("result") {
+                                        if let Some(logs) =
+                                            result.get("logs").and_then(|l| l.as_array())
+                                        {
+                                            debug!("Processing {} log entries", logs.len());
+                                            let events: Vec<EventLog> = logs
+                                                .iter()
+                                                .filter_map(|log| {
+                                                    debug!("Processing log entry: {:?}", log);
+                                                    match serde_json::from_value::<EventLog>(
+                                                        log.clone(),
+                                                    ) {
+                                                        Ok(mut event_log) => {
+                                                            event_log.timestamp = block_timestamp;
+                                                            debug!("Successfully parsed log entry");
+                                                            Some(event_log)
+                                                        }
+                                                        Err(e) => {
+                                                            error!(
+                                                                "Failed to parse log entry: {}",
+                                                                e
+                                                            );
+                                                            error!("Raw log entry: {:?}", log);
+                                                            // Attempt to construct event log manually
+                                                            let event_log = EventLog {
+                                                                address: log["address"]
+                                                                    .as_str()
+                                                                    .unwrap_or("")
+                                                                    .to_string(),
+                                                                topics: log["topics"]
+                                                                    .as_array()
+                                                                    .map(|t| {
+                                                                        t.iter()
+                                                                            .filter_map(|topic| {
+                                                                                topic.as_str().map(
+                                                                                    String::from,
+                                                                                )
+                                                                            })
+                                                                            .collect()
+                                                                    })
+                                                                    .unwrap_or_default(),
+                                                                data: log["data"]
+                                                                    .as_str()
+                                                                    .unwrap_or("")
+                                                                    .to_string(),
+                                                                block_number: log["blockNumber"]
+                                                                    .as_str()
+                                                                    .unwrap_or("")
+                                                                    .to_string(),
+                                                                transaction_hash: log
+                                                                    ["transactionHash"]
+                                                                    .as_str()
+                                                                    .unwrap_or("")
+                                                                    .to_string(),
+                                                                transaction_index: log
+                                                                    ["transactionIndex"]
+                                                                    .as_str()
+                                                                    .unwrap_or("")
+                                                                    .to_string(),
+                                                                block_hash: log["blockHash"]
+                                                                    .as_str()
+                                                                    .unwrap_or("")
+                                                                    .to_string(),
+                                                                log_index: log["logIndex"]
+                                                                    .as_str()
+                                                                    .unwrap_or("")
+                                                                    .to_string(),
+                                                                removed: log["removed"]
+                                                                    .as_bool()
+                                                                    .unwrap_or(false),
+                                                                timestamp: block_timestamp,
+                                                                decoded_event: None,
+                                                            };
+                                                            Some(event_log)
+                                                        }
+                                                    }
+                                                })
+                                                .collect();
+
+                                            if events.is_empty() && !logs.is_empty() {
+                                                warn!("Failed to parse any events from non-empty logs");
+                                                HttpResponse::InternalServerError().json(json!({
+                                                    "error": "Failed to parse event logs",
+                                                    "raw_logs": logs
+                                                }))
+                                            } else {
+                                                debug!(
+                                                    "Successfully processed {} events",
+                                                    events.len()
+                                                );
+                                                HttpResponse::Ok().json(events)
+                                            }
+                                        } else {
+                                            debug!("No logs found in transaction receipt");
+                                            HttpResponse::Ok().json(Vec::<EventLog>::new())
+                                        }
+                                    } else {
+                                        warn!("No result found in transaction receipt response");
+                                        HttpResponse::NotFound().json(json!({
+                                            "error": "Transaction not found"
+                                        }))
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to fetch transaction events: {}", e);
+                                    HttpResponse::InternalServerError().json(json!({
+                                        "error": "Failed to fetch transaction events",
+                                        "details": e.to_string()
+                                    }))
+                                }
+                            }
+                        }
+                        None => {
+                            warn!("No available nodes for chain {}", chain_id);
+                            HttpResponse::ServiceUnavailable().json(json!({
+                                "error": "No available nodes for the specified chain"
+                            }))
+                        }
+                    }
+                } else {
+                    error!("No load balancer found for chain {}", chain_id);
+                    HttpResponse::BadRequest().json(json!({"error": "Invalid chain ID"}))
+                }
+            } else {
+                error!("Chain {} not found in configuration", chain_id);
+                HttpResponse::BadRequest().json(json!({"error": "Unsupported chain ID"}))
+            }
+        }
+        None => {
+            error!("Invalid or missing chain specification");
+            HttpResponse::BadRequest().json(json!({
+                "error": "Invalid or missing chain specification"
+            }))
+        }
     }
 }
 
@@ -700,6 +989,14 @@ pub async fn run_server(
             .route(
                 "/{chain}/tx/{tx_hash}",
                 web::get().to(get_transaction_details),
+            )
+            .route(
+                "/tx/{tx_hash}/events",
+                web::get().to(get_transaction_events),
+            )
+            .route(
+                "/{chain}/tx/{tx_hash}/events",
+                web::get().to(get_transaction_events),
             )
             .service(web::resource("/eth").route(web::post().to(ethereum)))
             .service(web::resource("/op").route(web::post().to(optimism)))

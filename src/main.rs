@@ -20,8 +20,9 @@ use clap::{Parser, Subcommand};
 use colored::*;
 use directories::ProjectDirs;
 use env_logger::{self, Env};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use prettytable::{Cell, Row, Table};
+use server::EventLog;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -89,6 +90,12 @@ enum Commands {
         command: String,
         #[arg(last = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+    Events {
+        #[arg(required = true)]
+        hash: String,
+        #[arg(short = 'n', long)]
+        chain: Option<String>,
     },
 }
 
@@ -216,6 +223,9 @@ async fn main() -> Result<()> {
                     std::process::exit(1);
                 }
             }
+        }
+        Some(Commands::Events { chain, hash }) => {
+            get_transaction_events(&config_path, chain.clone(), hash.clone()).await?
         }
         None => start_server(&config_path, &mut extension_manager).await?,
     }
@@ -461,6 +471,94 @@ async fn run_benchmarks(
     let results = run_benchmark(&app_config, benchmark_duration, requests_per_second).await;
     info!("Benchmark completed. Printing results:");
     print_benchmark_results(&results);
+
+    Ok(())
+}
+
+async fn get_transaction_events(
+    config_path: &PathBuf,
+    chain: Option<String>,
+    hash: String,
+) -> Result<()> {
+    let app_config = AppConfig::load(config_path)?;
+    let client = create_client(&app_config.connection_pool);
+
+    let url = format!("http://{}/tx/{}/events", app_config.server_addr, hash);
+    let mut request = client.get(&url);
+
+    if let Some(chain) = chain {
+        request = request.header("X-Chain-ID", chain);
+    }
+
+    let response = request.send().await?;
+
+    if response.status().is_success() {
+        let response_text = response.text().await?;
+        debug!("Raw response: {}", response_text);
+
+        let events: Vec<EventLog> = serde_json::from_str(&response_text).map_err(|e| {
+            error!("Failed to parse events JSON: {}", e);
+            error!("Response text: {}", response_text);
+            anyhow::anyhow!("Failed to parse events JSON: {}", e)
+        })?;
+
+        if events.is_empty() {
+            println!("No events found for transaction {}", hash);
+        } else {
+            println!("\nFound {} events for transaction {}:", events.len(), hash);
+            for (i, event) in events.iter().enumerate() {
+                println!("\nEvent #{}", i + 1);
+
+                // Only print non-empty fields
+                if !event.address.is_empty() {
+                    println!("  Address: {}", event.address);
+                }
+                if !event.block_number.is_empty() {
+                    println!("  Block Number: {}", event.block_number);
+                }
+                if !event.transaction_index.is_empty() {
+                    println!("  Transaction Index: {}", event.transaction_index);
+                }
+                if !event.log_index.is_empty() {
+                    println!("  Log Index: {}", event.log_index);
+                }
+
+                if !event.topics.is_empty() {
+                    println!("  Topics:");
+                    for (j, topic) in event.topics.iter().enumerate() {
+                        println!("    {}: {}", j, topic);
+                    }
+                }
+
+                if !event.data.is_empty() {
+                    println!("  Data: {}", event.data);
+                }
+
+                if let Some(timestamp) = &event.timestamp {
+                    println!("  Timestamp: {}", timestamp);
+                }
+
+                if let Some(decoded) = &event.decoded_event {
+                    println!("  Decoded Event:");
+                    println!("    Name: {}", decoded.name);
+                    println!("    Parameters:");
+                    for param in &decoded.params {
+                        println!(
+                            "      {}{}: {}",
+                            param.name,
+                            if param.indexed { " (indexed)" } else { "" },
+                            param.value
+                        );
+                    }
+                }
+                println!("  {}", "-".repeat(50));
+            }
+        }
+    } else {
+        let error_text = response.text().await?;
+        eprintln!("Error response: {}", error_text);
+        return Err(anyhow::anyhow!("Failed to fetch events: {}", error_text));
+    }
 
     Ok(())
 }
