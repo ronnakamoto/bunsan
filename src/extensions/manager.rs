@@ -205,8 +205,8 @@ impl ExtensionManager {
         self.copy_dir_all(&src_dist_path, &dest_path).await?;
         info!("Copied all files from dist folder to: {:?}", dest_path);
 
-        // Ensure the binary is executable on Unix-like systems
-        if cfg!(unix) {
+        #[cfg(unix)]
+        {
             use std::os::unix::fs::PermissionsExt;
             let platforms = ["linux-x64", "macos-arm64", "macos-x64"];
             for platform in platforms.iter() {
@@ -220,6 +220,12 @@ impl ExtensionManager {
                     info!("Set executable permissions for: {:?}", binary_path);
                 }
             }
+        }
+
+        #[cfg(windows)]
+        {
+            // On Windows, executable permissions are handled by the file extension
+            info!("Skipping executable permissions on Windows");
         }
 
         // Copy package.json to the extension directory
