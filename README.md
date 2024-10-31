@@ -20,6 +20,7 @@ Bunsan(分散) is a high-performance, multi-chain RPC (Remote Procedure Call) lo
 Bunsan supports the following chains out of the box:
 
 - Ethereum Mainnet (Chain ID: 1)
+- Aurora Testnet (Chain ID: 1313161555)
 - Optimism (Chain ID: 10)
 - Arbitrum One (Chain ID: 42161)
 - BNB Smart Chain (Chain ID: 56)
@@ -113,13 +114,14 @@ nodes = [
 ]
 
 [[chains]]
-name = "Optimism"
-chain_id = 10
-chain = "Optimism"
-load_balancing_strategy = "RoundRobin"
+name = "Aurora Testnet"
+chain_id = 1313161555
+chain = "AuroraTestnet"
+load_balancing_strategy = "LeastConnections"
 nodes = [
-    "https://1rpc.io/op",
-    "https://optimism.blockpi.network/v1/rpc/public",
+    "https://testnet.aurora.dev",
+    "https://endpoints.omniatech.io/v1/aurora/testnet/public",
+    "https://aurora-testnet.drpc.org",
 ]
 
 [[chains]]
@@ -167,6 +169,10 @@ Bunsan provides several CLI commands for management and monitoring:
 - `nodes`: List all connected nodes and their status
 - `benchmark`: Run performance benchmarks
 - `tx`: Retrieve transaction details
+- `install-extension`: Install a new extension
+- `list-extensions`: List all installed extensions
+- `uninstall-extension`: Remove an installed extension
+- `run-extension`: Execute a command from an installed extension
 
 For more information on each command, use the `--help` option:
 
@@ -183,7 +189,7 @@ Bunsan supports multiple methods for specifying the target chain in your RPC req
 1. **Chain-specific endpoints**: Use dedicated endpoints for each chain.
    ```
    POST http://localhost:8080/eth
-   POST http://localhost:8080/op
+   POST http://localhost:8080/aurora-testnet
    POST http://localhost:8080/arb
    POST http://localhost:8080/bnb
    ```
@@ -200,6 +206,10 @@ Bunsan supports multiple methods for specifying the target chain in your RPC req
    ```
    POST http://localhost:8080
    X-Chain-ID: ethereum
+   ```
+   ```
+   POST http://localhost:8080
+   X-Chain-ID: aurora-testnet
    ```
 4. **Default chain**: If no chain is specified, Bunsan defaults to Ethereum.
    ```
@@ -239,6 +249,48 @@ Bunsan supports the following load balancing strategies:
 3. **Random**: Randomly selects a healthy node for each request.
 
 You can configure different strategies for each chain in the configuration file.
+
+## Using Extensions
+
+Bunsan supports extensions to enhance its functionality. Here's how you can work with extensions:
+
+### Installing Extensions
+
+To install an extension, use the following command:
+
+```bash
+bunsan install-extension <extension-name>
+```
+
+This command will download and install the specified extension from the Bunsan extensions repository.
+
+### Listing Installed Extensions
+
+To see a list of all installed extensions, use:
+
+```bash
+bunsan list-extensions
+```
+
+This will display the name, version, and description of each installed extension.
+
+### Uninstalling Extensions
+
+To remove an installed extension, use:
+
+```bash
+bunsan uninstall-extension <extension-name>
+```
+
+### Running Extension Commands
+
+To run a command provided by an installed extension, use:
+
+```bash
+bunsan run-extension <extension-name> <command> [args...]
+```
+
+Replace `<extension-name>` with the name of the extension, `<command>` with the specific command you want to run, and `[args...]` with any additional arguments required by the command.
 
 ## Benchmarking
 
