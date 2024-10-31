@@ -264,6 +264,10 @@ bunsan install-extension <extension-name>
 
 This command will download and install the specified extension from the Bunsan extensions repository.
 
+Bunsan extensions are hosted on a [GitHub repository](https://github.com/ronnakamoto/bunsan-extensions).
+The first extension available is `near-mpc-accounts`, that exposes HTTP endpoints via Bunsan to allow developers leverage NEAR's Chain Abstraction via Chain Signatures, easily.
+Checkout the [near-mpc-accounts extension's documentation](https://github.com/ronnakamoto/bunsan-extensions/tree/main/near-mpc-accounts) for more details.
+
 ### Listing Installed Extensions
 
 To see a list of all installed extensions, use:
