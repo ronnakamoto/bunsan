@@ -22,6 +22,17 @@ nodes = [
 ]
 
 [[chains]]
+name = "Aurora Testnet"
+chain_id = 1313161555
+chain = "AuroraTestnet"
+load_balancing_strategy = "LeastConnections"
+nodes = [
+    "https://testnet.aurora.dev",
+    "https://endpoints.omniatech.io/v1/aurora/testnet/public",
+    "https://aurora-testnet.drpc.org",
+]
+
+[[chains]]
 name = "Optimism"
 chain_id = 10
 chain = "Optimism"
@@ -60,7 +71,7 @@ nodes = [
 name = "Sepolia Testnet"
 chain_id = 11155111
 chain = "SepoliaTestnet"
-load_balancing_strategy = "LeastConnections"
+load_balancing_strategy = "RoundRobin"
 nodes = [
     "https://rpc.sepolia.org",
     "https://rpc2.sepolia.org",

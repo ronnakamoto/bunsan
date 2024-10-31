@@ -20,6 +20,7 @@ Bunsan(分散) is a high-performance, multi-chain RPC (Remote Procedure Call) lo
 Bunsan supports the following chains out of the box:
 
 - Ethereum Mainnet (Chain ID: 1)
+- Aurora Testnet (Chain ID: 1313161555)
 - Optimism (Chain ID: 10)
 - Arbitrum One (Chain ID: 42161)
 - BNB Smart Chain (Chain ID: 56)
@@ -113,13 +114,14 @@ nodes = [
 ]
 
 [[chains]]
-name = "Optimism"
-chain_id = 10
-chain = "Optimism"
-load_balancing_strategy = "RoundRobin"
+name = "Aurora Testnet"
+chain_id = 1313161555
+chain = "AuroraTestnet"
+load_balancing_strategy = "LeastConnections"
 nodes = [
-    "https://1rpc.io/op",
-    "https://optimism.blockpi.network/v1/rpc/public",
+    "https://testnet.aurora.dev",
+    "https://endpoints.omniatech.io/v1/aurora/testnet/public",
+    "https://aurora-testnet.drpc.org",
 ]
 
 [[chains]]
@@ -187,7 +189,7 @@ Bunsan supports multiple methods for specifying the target chain in your RPC req
 1. **Chain-specific endpoints**: Use dedicated endpoints for each chain.
    ```
    POST http://localhost:8080/eth
-   POST http://localhost:8080/op
+   POST http://localhost:8080/aurora-testnet
    POST http://localhost:8080/arb
    POST http://localhost:8080/bnb
    ```
@@ -204,6 +206,10 @@ Bunsan supports multiple methods for specifying the target chain in your RPC req
    ```
    POST http://localhost:8080
    X-Chain-ID: ethereum
+   ```
+   ```
+   POST http://localhost:8080
+   X-Chain-ID: aurora-testnet
    ```
 4. **Default chain**: If no chain is specified, Bunsan defaults to Ethereum.
    ```

@@ -44,17 +44,43 @@ impl ExtensionExecutor {
         let binary_path = extension_path.join(platform_folder).join(binary_name);
 
         let mut cmd = Command::new(&binary_path);
-        cmd.arg(command).args(args).envs(env_vars);
+        cmd.arg(command).args(&args).envs(&env_vars);
 
-        let output = cmd.output()?;
+        let debug_command = format!(
+            "Command: {:?}\nArgs: {:?}\nEnv vars: {:?}",
+            binary_path, args, env_vars
+        );
 
-        if output.status.success() {
-            Ok(String::from_utf8(output.stdout)?)
-        } else {
-            Err(anyhow::anyhow!(
-                "Extension execution failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ))
+        match cmd.output() {
+            Ok(output) => {
+                if output.status.success() {
+                    String::from_utf8(output.stdout)
+                        .map_err(|e| anyhow::anyhow!("Failed to decode stdout as UTF-8: {}", e))
+                } else {
+                    let exit_code = output.status.code().unwrap_or(-1);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+
+                    Err(anyhow::anyhow!(
+                        "Extension execution failed:\nExit code: {}\n\
+                        Command details:\n{}\n\
+                        Stderr:\n{}\n\
+                        Stdout:\n{}",
+                        exit_code,
+                        debug_command,
+                        stderr,
+                        stdout
+                    ))
+                }
+            }
+            Err(e) => Err(anyhow::anyhow!(
+                "Failed to execute command:\n{}\nError: {}\n\
+                    Binary path exists: {}\nBinary path: {}",
+                debug_command,
+                e,
+                binary_path.exists(),
+                binary_path.display()
+            )),
         }
     }
 }

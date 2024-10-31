@@ -21,6 +21,7 @@ use toml_edit::DocumentMut;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Chain {
     Ethereum,
+    AuroraTestnet,
     Optimism,
     Arbitrum,
     BNBSmartChain,
@@ -45,6 +46,7 @@ impl Chain {
     fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "eth" | "ethereum" => Some(Chain::Ethereum),
+            "aurora-testnet" | "aurora-test" => Some(Chain::AuroraTestnet),
             "op" | "optimism" => Some(Chain::Optimism),
             "arb" | "arbitrum" => Some(Chain::Arbitrum),
             "bnb" | "binance" | "bsc" => Some(Chain::BNBSmartChain),
@@ -70,6 +72,7 @@ impl Chain {
     fn to_chain_id(&self) -> u64 {
         match self {
             Chain::Ethereum => 1,
+            Chain::AuroraTestnet => 1313161555,
             Chain::Optimism => 10,
             Chain::Arbitrum => 42161,
             Chain::BNBSmartChain => 56,
@@ -153,6 +156,13 @@ async fn rpc_endpoint(
     body: web::Json<Value>,
     data: web::Data<AppState>,
 ) -> HttpResponse {
+    debug!(
+        "Received RPC request:\nPath: {}\nMethod: {}\nHeaders: {:?}\nBody: {}",
+        req.uri().path(),
+        req.method(),
+        req.headers(),
+        serde_json::to_string_pretty(&body).unwrap_or_default()
+    );
     let chain = determine_chain(&req, &body);
 
     match chain {
@@ -678,6 +688,7 @@ macro_rules! chain_endpoints {
 // Generate chain-specific endpoints
 chain_endpoints!(
     ethereum,
+    aurora_testnet,
     optimism,
     arbitrum,
     bnb_smart_chain,
@@ -999,6 +1010,7 @@ pub async fn run_server(
                 web::get().to(get_transaction_events),
             )
             .service(web::resource("/eth").route(web::post().to(ethereum)))
+            .service(web::resource("/aurora-testnet").route(web::post().to(aurora_testnet)))
             .service(web::resource("/op").route(web::post().to(optimism)))
             .service(web::resource("/arb").route(web::post().to(arbitrum)))
             .service(web::resource("/bnb").route(web::post().to(bnb_smart_chain)))

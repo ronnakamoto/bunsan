@@ -53,6 +53,7 @@ impl AppConfig {
             if chain_config.chain.is_none() {
                 chain_config.chain = match chain_config.chain_id {
                     1 => Some(Chain::Ethereum),
+                    1313161555 => Some(Chain::AuroraTestnet),
                     10 => Some(Chain::Optimism),
                     42161 => Some(Chain::Arbitrum),
                     56 => Some(Chain::BNBSmartChain),
