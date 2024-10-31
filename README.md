@@ -7,10 +7,11 @@ Bunsan(分散) is a high-performance, multi-chain RPC (Remote Procedure Call) lo
 
 ## Features
 
-- **Multi-Chain Support**: Seamlessly handle requests for multiple EVM-compatible chains (e.g., Ethereum, Optimism, Arbitrum, BNB Smart Chain).
+- **Multi-Chain Support**: Seamlessly handle requests for multiple EVM-compatible chains (e.g., Ethereum, Aurora, Optimism, Arbitrum, BNB Smart Chain, etc.).
 - **Flexible Chain Selection**: Support multiple methods for specifying the target chain in requests.
 - **Connection Pooling**: Efficiently manage and reuse connections to improve performance and reduce overhead.
 - **Dynamic Load Balancing**: Choose from multiple load balancing strategies (Round Robin, Least Connections, Random) for each chain.
+- **Highly Extensible via Extensions**: Bunsan supports extension that add capabilities to Bunsan's http layer. Eg. [near-mpc-accounts](https://github.com/ronnakamoto/bunsan-extensions/tree/main/near-mpc-accounts) brings Chain Abstraction via NEAR's MPC into Bunsan.
 - **Health Checking**: Continuously monitor node health and automatically route traffic to healthy nodes.
 - **Configuration Hot-Reloading**: Update configuration without restarting the service.
 - **Detailed Metrics**: Access real-time health and performance metrics for all configured chains and nodes.
